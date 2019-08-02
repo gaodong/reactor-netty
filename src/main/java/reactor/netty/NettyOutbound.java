@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -28,6 +28,7 @@ import java.util.Objects;
 import java.util.concurrent.Callable;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
@@ -47,14 +48,14 @@ import reactor.core.publisher.Mono;
 public interface NettyOutbound extends Publisher<Void> {
 
 	/**
-	 * Return the assigned {@link ByteBufAllocator}.
+	 * Returns the assigned {@link ByteBufAllocator}.
 	 *
 	 * @return the {@link ByteBufAllocator}
 	 */
 	ByteBufAllocator alloc();
 
 	/**
-	 * Return a never completing {@link Mono} after this {@link NettyOutbound#then()} has
+	 * Returns a never completing {@link Mono} after this {@link NettyOutbound#then()} has
 	 * completed.
 	 *
 	 * @return a never completing {@link Mono} after this {@link NettyOutbound#then()} has
@@ -65,41 +66,39 @@ public interface NettyOutbound extends Publisher<Void> {
 	}
 
 	/**
-	 * Provide a new {@link NettyOutbound} scoped configuration for sending. The
-	 * {@link NettyPipeline.SendOptions} changes will apply to the next written object or
-	 * {@link Publisher}.
-	 *
-	 * @param configurator the callback invoked to retrieve send configuration
-	 *
-	 * @return {@code this} instance
-	 */
-	default NettyOutbound options(Consumer<? super NettyPipeline.SendOptions> configurator) {
-		return withConnection(c -> c.channel()
-		                            .pipeline()
-		                            .fireUserEventTriggered(new NettyPipeline.SendOptionsChangeEvent(configurator)));
-	}
-
-	/**
-	 * Send data to the peer, listen for any error on write and close on terminal signal
+	 * Sends data to the peer, listens for any error on write and closes on terminal signal
 	 * (complete|error). <p>A new {@link NettyOutbound} type (or the same) for typed send
-	 * sequences. An implementor can therefore specialize the Outbound after a first after
-	 * a prepending data publisher.
-	 * Note: Nesting any send* method is not supported.
+	 * sequences.</p>
+	 * <p>Note: Nesting any send* method is not supported.</p>
 	 *
 	 * @param dataStream the dataStream publishing OUT items to write on this channel
 	 *
 	 * @return A new {@link NettyOutbound} to append further send. It will emit a complete
-	 * signal successful sequence write (e.g. after "flush") or  any error during write.
+	 * signal successful sequence write (e.g. after "flush") or any error during write.
 	 */
 	default NettyOutbound send(Publisher<? extends ByteBuf> dataStream) {
-		return sendObject(dataStream);
+		return send(dataStream, ReactorNetty.PREDICATE_BB_FLUSH);
 	}
 
 	/**
-	 * Send bytes to the peer, listen for any error on write and close on terminal
+	 * Sends data to the peer, listens for any error on write and closes on terminal signal
+	 * (complete|error). <p>A new {@link NettyOutbound} type (or the same) for typed send
+	 * sequences.</p>
+	 * <p>Note: Nesting any send* method is not supported.</p>
+	 *
+	 * @param dataStream the dataStream publishing OUT items to write on this channel
+	 * @param predicate that returns true if explicit flush operation is needed after that buffer
+	 *
+	 * @return A new {@link NettyOutbound} to append further send. It will emit a complete
+	 * signal successful sequence write (e.g. after "flush") or any error during write.
+	 */
+	NettyOutbound send(Publisher<? extends ByteBuf> dataStream, Predicate<ByteBuf> predicate);
+
+	/**
+	 * Sends bytes to the peer, listens for any error on write and closes on terminal
 	 * signal (complete|error). If more than one publisher is attached (multiple calls to
 	 * send()) completion occurs after all publishers complete.
-	 * Note: Nesting any send* method is not supported.
+	 * <p>Note: Nesting any send* method is not supported.</p>
 	 *
 	 * @param dataStream the dataStream publishing Buffer items to write on this channel
 	 *
@@ -111,7 +110,7 @@ public interface NettyOutbound extends Publisher<Void> {
 	}
 
 	/**
-	 * Send content from given {@link Path} using
+	 * Sends content from given {@link Path} using
 	 * {@link java.nio.channels.FileChannel#transferTo(long, long, WritableByteChannel)}
 	 * support. If the system supports it and the path resolves to a local file
 	 * system {@link File} then transfer will use zero-byte copy
@@ -141,20 +140,15 @@ public interface NettyOutbound extends Publisher<Void> {
 	}
 
 	/**
-	 * Send content from given {@link Path} using
+	 * Sends content from the given {@link Path} using
 	 * {@link java.nio.channels.FileChannel#transferTo(long, long, WritableByteChannel)}
-	 * support. If the system supports it and the path resolves to a local file
-	 * system {@link File} then transfer will use zero-byte copy
-	 * to the peer.
-	 * <p>It will
-	 * listen for any error on
-	 * write and close
+	 * support, if the system supports it, the path resolves to a local file
+	 * system {@link File}, compression and SSL/TLS is not enabled, then transfer will
+	 * use zero-byte copy to the peer., otherwise chunked read/write will be used.
+	 * <p>It will listens for any error on write and closes
 	 * on terminal signal (complete|error). If more than one publisher is attached
-	 * (multiple calls to send()) completion occurs after all publishers complete.
-	 * <p>
-	 * Note: this will emit {@link io.netty.channel.FileRegion} in the outbound
-	 * {@link io.netty.channel.ChannelPipeline}
-	 * Note: Nesting any send* method is not supported.
+	 * (multiple calls to send()) completion occurs after all publishers complete.</p>
+	 * <p></p>Note: Nesting any send* method is not supported.</p>
 	 *
 	 * @param file the file Path
 	 * @param position where to start
@@ -183,14 +177,11 @@ public interface NettyOutbound extends Publisher<Void> {
 	}
 
 	/**
-	 * Send content from given {@link Path} using chunked read/write. <p>It will listen
+	 * Sends content from given {@link Path} using chunked read/write. <p>It will listen
 	 * for any error on write and close on terminal signal (complete|error). If more than
 	 * one publisher is attached (multiple calls to send()) completion occurs after all
-	 * publishers complete.
-	 * <p>
-	 * Note: this will emit {@link io.netty.channel.FileRegion} in the outbound {@link
-	 * io.netty.channel.ChannelPipeline}
-	 * Note: Nesting any send* method is not supported.
+	 * publishers complete.</p>
+	 * <p>Note: Nesting any send* method is not supported.</p>
 	 *
 	 * @param file the file Path
 	 * @param position where to start
@@ -216,10 +207,10 @@ public interface NettyOutbound extends Publisher<Void> {
 	}
 
 	/**
-	 * Send data to the peer, listen for any error on write and close on terminal signal
-	 * (complete|error).Each individual {@link Publisher} completion will flush
+	 * Sends data to the peer, listens for any error on write and closes on terminal signal
+	 * (complete|error). Each individual {@link Publisher} completion will flush
 	 * the underlying IO runtime.
-	 * Note: Nesting any send* method is not supported.
+	 * <p>Note: Nesting any send* method is not supported.</p>
 	 *
 	 * @param dataStreams the dataStream publishing OUT items to write on this channel
 	 *
@@ -227,28 +218,46 @@ public interface NettyOutbound extends Publisher<Void> {
 	 * any error during write
 	 */
 	default NettyOutbound sendGroups(Publisher<? extends Publisher<? extends ByteBuf>> dataStreams) {
-		return then(Flux.from(dataStreams)
-		           .concatMapDelayError(this::send, false, 32)
-		           .then());
+		return send(
+				Flux.from(dataStreams)
+				    .concatMap(p -> Flux.<ByteBuf>from(p)
+				                        .concatWith(Mono.just(ReactorNetty.BOUNDARY)), 32),
+				ReactorNetty.PREDICATE_GROUP_FLUSH);
 	}
 
 	/**
-	 * Send an object through netty pipeline. If type of Publisher, send all signals,
+	 * Sends an object through Netty pipeline. If type of {@link Publisher}, sends all signals,
 	 * flushing on complete by default. Write occur in FIFO sequence.
-	 * Note: Nesting any send* method is not supported.
+	 * <p>Note: Nesting any send* method is not supported.</p>
 	 *
 	 * @param dataStream the dataStream publishing items to write on this channel
-	 * or a simple pojo supported by configured netty handlers
+	 * or a simple pojo supported by configured Netty handlers
 	 *
 	 * @return A Publisher to signal successful sequence write (e.g. after "flush") or any
 	 * error during write
 	 */
-	NettyOutbound sendObject(Publisher<?> dataStream);
+	default NettyOutbound sendObject(Publisher<?> dataStream) {
+		return sendObject(dataStream, ReactorNetty.PREDICATE_FLUSH);
+	}
 
 	/**
-	 * Send data to the peer, listen for any error on write and close on terminal signal
+	 * Sends an object through Netty pipeline. If type of {@link Publisher}, sends all signals,
+	 * flushing on complete by default. Write occur in FIFO sequence.
+	 * <p>Note: Nesting any send* method is not supported.</p>
+	 *
+	 * @param dataStream the dataStream publishing items to write on this channel
+	 * or a simple pojo supported by configured Netty handlers
+	 * @param predicate that returns true if explicit flush operation is needed after that object
+	 *
+	 * @return A Publisher to signal successful sequence write (e.g. after "flush") or any
+	 * error during write
+	 */
+	NettyOutbound sendObject(Publisher<?> dataStream, Predicate<Object> predicate);
+
+	/**
+	 * Sends data to the peer, listens for any error on write and closes on terminal signal
 	 * (complete|error).
-	 * Note: Nesting any send* method is not supported.
+	 * <p>Note: Nesting any send* method is not supported.</p>
 	 *
 	 * @param message the object to publish
 	 *
@@ -258,10 +267,10 @@ public interface NettyOutbound extends Publisher<Void> {
 	NettyOutbound sendObject(Object message);
 
 	/**
-	 * Send String to the peer, listen for any error on write and close on terminal signal
+	 * Sends String to the peer, listens for any error on write and closes on terminal signal
 	 * (complete|error). If more than one publisher is attached (multiple calls to send())
 	 * completion occurs after all publishers complete.
-	 * Note: Nesting any send* method is not supported.
+	 * <p>Note: Nesting any send* method is not supported.</p>
 	 *
 	 * @param dataStream the dataStream publishing Buffer items to write on this channel
 	 *
@@ -273,10 +282,10 @@ public interface NettyOutbound extends Publisher<Void> {
 	}
 
 	/**
-	 * Send String to the peer, listen for any error on write and close on terminal signal
+	 * Sends String to the peer, listens for any error on write and closes on terminal signal
 	 * (complete|error). If more than one publisher is attached (multiple calls to send())
 	 * completion occurs after all publishers complete.
-	 * Note: Nesting any send* method is not supported.
+	 * <p>Note: Nesting any send* method is not supported.</p>
 	 *
 	 * @param dataStream the dataStream publishing Buffer items to write on this channel
 	 * @param charset the encoding charset
@@ -286,7 +295,7 @@ public interface NettyOutbound extends Publisher<Void> {
 	 */
 	default NettyOutbound sendString(Publisher<? extends String> dataStream,
 			Charset charset) {
-		return sendObject(ReactorNetty.publisherOrScalarMap(
+		return send(ReactorNetty.publisherOrScalarMap(
 				dataStream, s -> {
 				    ByteBuf buffer = alloc().buffer();
 				    buffer.writeCharSequence(s, charset);
@@ -295,8 +304,8 @@ public interface NettyOutbound extends Publisher<Void> {
 	}
 
 	/**
-	 * Bind a send to a starting/cleanup lifecycle
-	 * Note: Nesting any send* method is not supported.
+	 * Binds a send to a starting/cleanup lifecycle
+	 * <p>Note: Nesting any send* method is not supported.</p>
 	 *
 	 * @param sourceInput state generator
 	 * @param mappedInput input to send
@@ -310,7 +319,7 @@ public interface NettyOutbound extends Publisher<Void> {
 			Consumer<? super S> sourceCleanup);
 
 	/**
-	 * Subscribe a {@code Void} subscriber to this outbound and trigger all eventual
+	 * Subscribes a {@code Void} subscriber to this outbound and trigger all eventual
 	 * parent outbound send.
 	 *
 	 * @param s the {@link Subscriber} to listen for send sequence completion/failure
@@ -321,7 +330,7 @@ public interface NettyOutbound extends Publisher<Void> {
 	}
 
 	/**
-	 * Obtain a {@link Mono} of pending outbound(s) write completion.
+	 * Obtains a {@link Mono} of pending outbound(s) write completion.
 	 *
 	 * @return a {@link Mono} of pending outbound(s) write completion
 	 */
@@ -330,16 +339,30 @@ public interface NettyOutbound extends Publisher<Void> {
 	}
 
 	/**
-	 * Append a {@link Publisher} task such as a Mono and return a new
+	 * Appends a {@link Publisher} task such as a {@link Mono} and returns a new
 	 * {@link NettyOutbound} to sequence further send.
 	 *
 	 * @param other the {@link Publisher} to subscribe to when this pending outbound
 	 * {@link #then()} is complete;
 	 *
-	 * @return a new {@link NettyOutbound} that
+	 * @return a new {@link NettyOutbound}
 	 */
 	default NettyOutbound then(Publisher<Void> other) {
 		return new ReactorNetty.OutboundThen(this, other);
+	}
+
+	/**
+	 * Append a {@link Publisher} task such as a Mono and return a new
+	 * {@link NettyOutbound} to sequence further send.
+	 *
+	 * @param other the {@link Publisher} to subscribe to when this pending outbound
+	 * {@link #then()} is complete;
+	 * @param onCleanup a cleanup hook when other has terminated or cancelled
+	 *
+	 * @return a new {@link NettyOutbound} that
+	 */
+	default NettyOutbound then(Publisher<Void> other, Runnable onCleanup) {
+		return new ReactorNetty.OutboundThen(this, other, onCleanup);
 	}
 
 	/**

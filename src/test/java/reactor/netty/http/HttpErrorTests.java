@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,9 +16,9 @@
 
 package reactor.netty.http;
 
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.List;
 
 import org.junit.Test;
 import reactor.core.publisher.Mono;
@@ -40,7 +40,7 @@ public class HttpErrorTests {
 				                                "/",
 				                                (httpServerRequest, httpServerResponse) -> {
 					                                return httpServerResponse.sendString(
-							                                Mono.error(new IllegalArgumentException()));
+							                                Mono.error(new IllegalArgumentException("test")));
 				                                }))
 		                                    .bindNow(Duration.ofSeconds(30));
 
@@ -52,7 +52,8 @@ public class HttpErrorTests {
 		                             .responseContent()
 		                             .asString(StandardCharsets.UTF_8)
 		                             .collectList())
-		            .verifyError(IOException.class);
+		            .expectNextMatches(List::isEmpty)
+		            .verifyComplete();
 
 		server.disposeNow();
 	}

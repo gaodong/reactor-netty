@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -23,6 +23,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.util.concurrent.FastThreadLocalThread;
 import io.netty.util.concurrent.Future;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.NonBlocking;
@@ -276,7 +277,7 @@ final class DefaultLoopResources extends AtomicLong implements LoopResources {
 		}
 	}
 
-	final static class EventLoop extends Thread implements NonBlocking {
+	final static class EventLoop extends FastThreadLocalThread implements NonBlocking {
 
 		EventLoop(Runnable target) {
 			super(target);

@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -47,7 +47,6 @@ final class HttpClientConfiguration {
 			AttributeKey.newInstance("httpClientConf");
 
 	boolean                       acceptGzip                     = false;
-	Boolean                       chunkedTransfer                = null;
 	String                        uri                            = null;
 	String                        baseUrl                        = null;
 	HttpHeaders                   headers                        = null;
@@ -55,6 +54,7 @@ final class HttpClientConfiguration {
 	String                        websocketSubprotocols          = null;
 	int                           websocketMaxFramePayloadLength = 65536;
 	int                           protocols                      = h11;
+	HttpResponseDecoderSpec       decoder                        = new HttpResponseDecoderSpec();
 
 	ClientCookieEncoder cookieEncoder = ClientCookieEncoder.STRICT;
 	ClientCookieDecoder cookieDecoder = ClientCookieDecoder.STRICT;
@@ -74,29 +74,30 @@ final class HttpClientConfiguration {
 		this.acceptGzip = from.acceptGzip;
 		this.cookieEncoder = from.cookieEncoder;
 		this.cookieDecoder = from.cookieDecoder;
+		this.decoder = from.decoder;
 		this.followRedirectPredicate = from.followRedirectPredicate;
-		this.chunkedTransfer = from.chunkedTransfer;
 		this.baseUrl = from.baseUrl;
 		this.headers = from.headers;
 		this.method = from.method;
 		this.websocketSubprotocols = from.websocketSubprotocols;
 		this.websocketMaxFramePayloadLength = from.websocketMaxFramePayloadLength;
 		this.body = from.body;
+		this.protocols = from.protocols;
+		this.deferredConf = from.deferredConf;
 	}
 
 	static HttpClientConfiguration getAndClean(Bootstrap b) {
 		HttpClientConfiguration hcc = (HttpClientConfiguration) b.config()
 		                                                         .attrs()
 		                                                         .get(CONF_KEY);
-		b.attr(CONF_KEY, null);
 		if (hcc == null) {
-			hcc = DEFAULT;
+			return DEFAULT;
 		}
 
+		b.attr(CONF_KEY, null);
 		return hcc;
 	}
 
-	@SuppressWarnings("unchecked")
 	static HttpClientConfiguration getOrCreate(Bootstrap b) {
 
 		HttpClientConfiguration hcc = (HttpClientConfiguration) b.config()
@@ -111,7 +112,6 @@ final class HttpClientConfiguration {
 		return hcc;
 	}
 
-	@SuppressWarnings("unchecked")
 	static HttpClientConfiguration get(Bootstrap b) {
 
 		HttpClientConfiguration hcc = (HttpClientConfiguration) b.config()
@@ -154,17 +154,6 @@ final class HttpClientConfiguration {
 
 	static final Function<Bootstrap, Bootstrap> MAP_NO_COMPRESS = b -> {
 		getOrCreate(b).acceptGzip = false;
-		return b;
-	};
-
-	static final Function<Bootstrap, Bootstrap> MAP_CHUNKED = b -> {
-		getOrCreate(b).chunkedTransfer = true;
-		return b;
-	};
-
-
-	static final Function<Bootstrap, Bootstrap> MAP_NO_CHUNKED = b -> {
-		getOrCreate(b).chunkedTransfer = false;
 		return b;
 	};
 
@@ -281,6 +270,11 @@ final class HttpClientConfiguration {
 
 	static Bootstrap followRedirectPredicate(Bootstrap b, BiPredicate<HttpClientRequest, HttpClientResponse> predicate) {
 		getOrCreate(b).followRedirectPredicate = predicate;
+		return b;
+	}
+
+	static Bootstrap decoder(Bootstrap b, HttpResponseDecoderSpec decoder) {
+		getOrCreate(b).decoder = decoder;
 		return b;
 	}
 

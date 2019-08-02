@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -31,6 +31,7 @@ import reactor.netty.DisposableServer;
 import reactor.netty.SocketUtils;
 import reactor.netty.resources.ConnectionProvider;
 import reactor.netty.resources.LoopResources;
+import sun.reflect.generics.reflectiveObjects.NotImplementedException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertTrue;
@@ -51,7 +52,7 @@ public class TcpResourcesTest {
 		loopResources = new LoopResources() {
 			@Override
 			public EventLoopGroup onServer(boolean useNative) {
-				return null;
+				throw new NotImplementedException();
 			}
 
 			@Override

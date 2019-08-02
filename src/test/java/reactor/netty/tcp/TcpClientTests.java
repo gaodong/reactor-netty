@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,14 +17,19 @@
 package reactor.netty.tcp;
 
 import java.io.IOException;
+import java.lang.ref.WeakReference;
 import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
+import java.nio.charset.Charset;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -32,7 +37,10 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelOption;
 import io.netty.handler.codec.LineBasedFrameDecoder;
 import org.assertj.core.api.Assertions;
@@ -45,12 +53,16 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 import reactor.netty.Connection;
+import reactor.netty.DisposableServer;
+import reactor.netty.NettyOutbound;
 import reactor.netty.SocketUtils;
 import reactor.netty.channel.AbortedException;
 import reactor.netty.channel.ChannelOperations;
-import reactor.netty.http.client.HttpClient;
 import reactor.netty.resources.ConnectionProvider;
 import reactor.netty.resources.LoopResources;
+import reactor.test.StepVerifier;
+import reactor.util.Logger;
+import reactor.util.Loggers;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
@@ -62,6 +74,8 @@ import static org.junit.Assert.*;
  * @since 2.5
  */
 public class TcpClientTests {
+
+	static final Logger log = Loggers.getLogger(TcpClientTests.class);
 
 	private final ExecutorService threadPool = Executors.newCachedThreadPool();
 	int                     echoServerPort;
@@ -150,7 +164,7 @@ public class TcpClientTests {
 		                             .wiretap(true)
 		                             .connectNow();
 
-		latch.await(30, TimeUnit.SECONDS);
+		assertTrue(latch.await(30, TimeUnit.SECONDS));
 
 		client.disposeNow();
 
@@ -194,7 +208,7 @@ public class TcpClientTests {
 		                     .wiretap(true)
 		                     .connectNow(Duration.ofSeconds(5));
 
-		latch.await(5, TimeUnit.SECONDS);
+		assertTrue(latch.await(5, TimeUnit.SECONDS));
 
 		s.disposeNow();
 
@@ -291,7 +305,7 @@ public class TcpClientTests {
 				         .wiretap(true)
 				         .connectNow(Duration.ofSeconds(30));
 
-		System.out.println("Connected");
+		log.debug("Connected");
 
 		c.onDispose()
 		 .log()
@@ -347,8 +361,8 @@ public class TcpClientTests {
 		                                    }))
 		         .subscribe(System.out::println);
 
-		latch.await(5, TimeUnit.SECONDS);
-		assertTrue("latch was counted down:" + latch.getCount(), latch.getCount() == 0);
+		assertTrue(latch.await(5, TimeUnit.SECONDS));
+		assertEquals("latch was counted down:" + latch.getCount(), 0, latch.getCount());
 		assertThat("totalDelay was >1.6s", totalDelay.get(), greaterThanOrEqualTo(1600L));
 	}
 
@@ -387,7 +401,7 @@ public class TcpClientTests {
 					         .port(abortServerPort);
 
 			Mono<? extends Connection> handler = tcpClient.handle((in, out) -> {
-				System.out.println("Start");
+				log.debug("Start");
 				connectionLatch.countDown();
 				in.receive()
 				  .subscribe();
@@ -396,10 +410,12 @@ public class TcpClientTests {
 			.wiretap(true)
 			.connect();
 
-			handler.log()
-			       .then(handler.doOnSuccess(s -> reconnectionLatch.countDown()))
-			       .block(Duration.ofSeconds(30))
-			       .onDispose();
+			Connection c =
+					handler.log()
+					       .then(handler.doOnSuccess(s -> reconnectionLatch.countDown()))
+					       .block(Duration.ofSeconds(30));
+			assertNotNull(c);
+			c.onDispose();
 
 			assertTrue("Initial connection is made", connectionLatch.await(5, TimeUnit.SECONDS));
 			assertTrue("A reconnect attempt was made", reconnectionLatch.await(5, TimeUnit.SECONDS));
@@ -520,7 +536,7 @@ public class TcpClientTests {
 		                             .host("localhost")
 		                             .port(echoServerPort)
 		                             .handle((in, out) -> {
-			                               System.out.println("hello");
+			                               log.debug("hello");
 			                               out.withConnection(c -> c.onWriteIdle(500, latch::countDown));
 
 			                               List<Publisher<Void>> allWrites =
@@ -534,7 +550,7 @@ public class TcpClientTests {
 		                             .wiretap(true)
 		                             .connectNow();
 
-		System.out.println("Started");
+		log.debug("Started");
 
 		assertTrue(latch.await(5, TimeUnit.SECONDS));
 
@@ -545,25 +561,8 @@ public class TcpClientTests {
 	}
 
 	@Test
-	public void nettyNetChannelAcceptsNettyChannelHandlers() throws InterruptedException {
-		HttpClient client = HttpClient.create()
-		                              .wiretap(true);
-
-		final CountDownLatch latch = new CountDownLatch(1);
-		System.out.println(client.get()
-		                         .uri("http://www.google.com/?q=test%20d%20dq")
-		                         .responseContent()
-		                         .asString()
-		                         .collectList()
-		                         .doOnSuccess(v -> latch.countDown())
-		                         .block(Duration.ofSeconds(30)));
-
-		assertTrue("Latch didn't time out", latch.await(15, TimeUnit.SECONDS));
-	}
-
-	@Test
 	public void gettingOptionsDuplicates() {
-		TcpClient client = TcpClient.create().host("foo").port(123);
+		TcpClient client = TcpClient.create().host("example.com").port(123);
 		Assertions.assertThat(client.configure())
 		          .isNotSameAs(TcpClient.DEFAULT_BOOTSTRAP)
 		          .isNotSameAs(client.configure());
@@ -658,12 +657,12 @@ public class TcpClientTests {
 				countDown();
 				while (true) {
 					SocketChannel ch = server.accept();
-					System.out.println("ABORTING");
+					log.debug("ABORTING");
 					ch.close();
 				}
 			}
 			catch (Exception e) {
-				// Server closed
+				Loggers.getLogger(this.getClass()).debug("", e);
 			}
 		}
 
@@ -769,4 +768,262 @@ public class TcpClientTests {
 		}
 	}
 
+
+	@Test
+	public void testIssue600_1() {
+		doTestIssue600(true);
+	}
+
+	@Test
+	public void testIssue600_2() {
+		doTestIssue600(false);
+	}
+
+	private void doTestIssue600(boolean withLoop) {
+		DisposableServer server =
+				TcpServer.create()
+				         .port(0)
+				         .handle((req, res) -> res.send(req.receive()
+				                                           .retain()
+				                                           .delaySubscription(Duration.ofSeconds(1))))
+				         .wiretap(true)
+				         .bindNow();
+
+		ConnectionProvider pool = ConnectionProvider.fixed("test", 10);
+		LoopResources loop = LoopResources.create("test", 4, true);
+		TcpClient client;
+		if (withLoop) {
+			client =
+					TcpClient.create(pool)
+					         .addressSupplier(server::address)
+					         .runOn(loop);
+		}
+		else {
+			client =
+					TcpClient.create(pool)
+					         .addressSupplier(server::address);
+		}
+
+		Set<String> threadNames = new ConcurrentSkipListSet<>();
+		StepVerifier.create(
+				Flux.range(1,4)
+				    .flatMap(i ->
+				            client.handle((in, out) -> {
+				                threadNames.add(Thread.currentThread().getName());
+				                return out.send(Flux.empty());
+				            })
+				            .connect()))
+		            .expectNextCount(4)
+		            .expectComplete()
+		            .verify(Duration.ofSeconds(30));
+
+		pool.dispose();
+		loop.dispose();
+		server.disposeNow();
+
+		Assertions.assertThat(threadNames.size()).isGreaterThan(1);
+	}
+
+	@Test
+	public void testRetryOnDifferentAddress() throws Exception {
+		DisposableServer server =
+				TcpServer.create()
+				         .port(0)
+				         .wiretap(true)
+				         .handle((req, res) -> res.sendString(Mono.just("test")))
+				         .bindNow();
+
+		final CountDownLatch latch = new CountDownLatch(1);
+
+		Supplier<SocketAddress> addressSupplier = new Supplier<SocketAddress>() {
+			int i = 2;
+
+			@Override
+			public SocketAddress get() {
+				return new InetSocketAddress("localhost", server.port() + i--);
+			}
+		};
+
+		Connection  conn =
+				TcpClient.create()
+				         .addressSupplier(addressSupplier)
+				         .doOnConnected(connection -> latch.countDown())
+				         .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 100)
+				         .handle((in, out) -> Mono.never())
+				         .wiretap(true)
+				         .connect()
+				         .retry()
+				         .block(Duration.ofSeconds(30));
+		assertNotNull(conn);
+
+		assertTrue(latch.await(30, TimeUnit.SECONDS));
+
+		conn.disposeNow();
+		server.disposeNow();
+	}
+
+	@Test
+	public void testReconnectWhenDisconnected() throws Exception {
+		DisposableServer server =
+				TcpServer.create()
+				         .port(0)
+				         .wiretap(true)
+				         .handle((req, res) -> res.sendString(Mono.just("test")))
+				         .bindNow();
+
+		final CountDownLatch latch = new CountDownLatch(1);
+
+		TcpClient  client =
+				TcpClient.create()
+				         .port(echoServerPort)
+				         .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 100)
+				         .handle((in, out) -> out.withConnection(Connection::dispose))
+				         .wiretap(true);
+
+		connect(client, true, latch);
+
+		assertTrue(latch.await(30, TimeUnit.SECONDS));
+
+		server.disposeNow();
+	}
+
+	private void connect(TcpClient  client, boolean reconnect, CountDownLatch latch) {
+		client.connect()
+		      .subscribe(
+		          conn -> {
+		              if (reconnect) {
+		                  conn.onTerminate()
+		                      .subscribe(null, null, () -> connect(client, false, latch));
+		              }
+		          },
+		          null,
+		          latch::countDown);
+	}
+
+	@Test
+	public void testIssue585_1() throws Exception {
+		DisposableServer server =
+				TcpServer.create()
+				         .port(0)
+				         .handle((req, res) -> res.send(req.receive()
+				                                           .retain()))
+				         .wiretap(true)
+				         .bindNow();
+
+		CountDownLatch latch = new CountDownLatch(1);
+
+		byte[] bytes = "test".getBytes(Charset.defaultCharset());
+		ByteBuf b1 = Unpooled.wrappedBuffer(bytes);
+		ByteBuf b2 = Unpooled.wrappedBuffer(bytes);
+		ByteBuf b3 = Unpooled.wrappedBuffer(bytes);
+
+		WeakReference<ByteBuf> refCheck1 = new WeakReference<>(b1);
+		WeakReference<ByteBuf> refCheck2 = new WeakReference<>(b2);
+		WeakReference<ByteBuf> refCheck3 = new WeakReference<>(b3);
+
+		Connection conn =
+				TcpClient.create()
+				         .addressSupplier(server::address)
+				         .wiretap(true)
+				         .connectNow();
+
+		NettyOutbound out = conn.outbound();
+
+		Flux.concatDelayError(
+		        out.sendObject(Mono.error(new RuntimeException("test")))
+		           .sendObject(b1)
+		           .then(),
+		        out.sendObject(Mono.error(new RuntimeException("test")))
+		           .sendObject(b2)
+		           .then(),
+		        out.sendObject(Mono.error(new RuntimeException("test")))
+		           .sendObject(b3)
+		           .then())
+		    .doOnError(t -> latch.countDown())
+		    .subscribe(conn.disposeSubscriber());
+
+		Assertions.assertThat(latch.await(30, TimeUnit.SECONDS)).isTrue();
+
+		Assertions.assertThat(b1.refCnt()).isEqualTo(0);
+		b1 = null;
+		checkReference(refCheck1);
+
+		Assertions.assertThat(b2.refCnt()).isEqualTo(0);
+		b2 = null;
+		checkReference(refCheck2);
+
+		Assertions.assertThat(b3.refCnt()).isEqualTo(0);
+		b3 = null;
+		checkReference(refCheck3);
+
+		server.disposeNow();
+		conn.disposeNow();
+	}
+
+	@Test
+	public void testIssue585_2() throws Exception {
+		DisposableServer server =
+				TcpServer.create()
+				         .port(0)
+				         .handle((req, res) -> res.send(req.receive()
+				                                           .retain()))
+				         .wiretap(true)
+				         .bindNow();
+
+		byte[] bytes = "test".getBytes(Charset.defaultCharset());
+		ByteBuf b1 = Unpooled.wrappedBuffer(bytes);
+		ByteBuf b2 = Unpooled.wrappedBuffer(bytes);
+		ByteBuf b3 = Unpooled.wrappedBuffer(bytes);
+
+		WeakReference<ByteBuf> refCheck1 = new WeakReference<>(b1);
+		WeakReference<ByteBuf> refCheck2 = new WeakReference<>(b2);
+		WeakReference<ByteBuf> refCheck3 = new WeakReference<>(b3);
+
+		Connection conn =
+				TcpClient.create()
+				         .addressSupplier(server::address)
+				         .wiretap(true)
+				         .connectNow();
+
+		NettyOutbound out = conn.outbound();
+
+		out.sendObject(b1)
+		   .then()
+		   .block(Duration.ofSeconds(30));
+
+		Assertions.assertThat(b1.refCnt()).isEqualTo(0);
+		b1 = null;
+		checkReference(refCheck1);
+
+		out.sendObject(b2)
+		   .then()
+		   .block(Duration.ofSeconds(30));
+
+		Assertions.assertThat(b2.refCnt()).isEqualTo(0);
+		b2 = null;
+		checkReference(refCheck2);
+
+		out.sendObject(b3)
+		   .then()
+		   .block(Duration.ofSeconds(30));
+
+		Assertions.assertThat(b3.refCnt()).isEqualTo(0);
+		b3 = null;
+		checkReference(refCheck3);
+
+		server.disposeNow();
+		conn.disposeNow();
+	}
+
+	private void checkReference(WeakReference<ByteBuf> ref) throws Exception {
+		for (int i = 0; i < 10; i++) {
+			if (ref.get() == null) {
+				return;
+			}
+			System.gc();
+			Thread.sleep(100);
+		}
+
+		Assertions.assertThat(ref.get()).isNull();
+	}
 }

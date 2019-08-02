@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,17 +15,25 @@
  */
 package reactor.netty.http.server;
 
+import java.net.InetSocketAddress;
+import java.nio.charset.Charset;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
+import io.netty.buffer.ByteBuf;
 import io.netty.handler.codec.http.HttpHeaders;
 import org.assertj.core.api.Assertions;
 import org.junit.After;
 import org.junit.Test;
 import reactor.core.publisher.Mono;
+import reactor.netty.Connection;
 import reactor.netty.DisposableServer;
 import reactor.netty.http.client.HttpClient;
+import reactor.netty.tcp.TcpClient;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.Assert.fail;
 
 /**
  * Tests for {@link ConnectionInfo}
@@ -118,6 +126,57 @@ public class ConnectionInfoTests {
 	}
 
 	@Test
+	public void proxyProtocol() throws InterruptedException {
+		String remoteAddress = "202.112.144.236";
+		ArrayBlockingQueue<String> resultQueue = new ArrayBlockingQueue<>(1);
+
+		Consumer<HttpServerRequest> requestConsumer = serverRequest -> {
+			String remoteAddrFromRequest = serverRequest.remoteAddress().getHostString();
+			resultQueue.add(remoteAddrFromRequest);
+		};
+
+		this.connection =
+				HttpServer.create()
+				          .port(0)
+				          .proxyProtocol(true)
+				          .handle((req, res) -> {
+				              try {
+				                  requestConsumer.accept(req);
+				                  return res.status(200)
+				                            .sendString(Mono.just("OK"));
+				              }
+				              catch (Throwable e) {
+				                  return res.status(500)
+				                            .sendString(Mono.just(e.getMessage()));
+				              }
+				          })
+				          .wiretap(true)
+				          .bindNow();
+
+		Connection clientConn =
+				TcpClient.create()
+				         .port(this.connection.port())
+				         .connectNow();
+
+		ByteBuf proxyProtocolMsg = clientConn.channel()
+		                                     .alloc()
+		                                     .buffer();
+		proxyProtocolMsg.writeCharSequence("PROXY TCP4 " + remoteAddress + " 10.210.12.10 5678 80\r\n",
+				Charset.defaultCharset());
+		proxyProtocolMsg.writeCharSequence("GET /test HTTP/1.1\r\nHost: a.example.com\r\n\r\n",
+				Charset.defaultCharset());
+		clientConn.channel()
+		          .writeAndFlush(proxyProtocolMsg)
+		          .addListener(f -> {
+		              if (!f.isSuccess()) {
+		                  fail("Writing proxyProtocolMsg was not successful");
+		              }
+		          });
+
+		assertThat(resultQueue.poll(5, TimeUnit.SECONDS)).isEqualTo(remoteAddress);
+	}
+
+	@Test
 	public void forwardedMultipleHosts() {
 		testClientRequest(
 				clientRequestHeaders -> clientRequestHeaders.add("Forwarded",
@@ -197,6 +256,69 @@ public class ConnectionInfoTests {
 				});
 	}
 
+	@Test
+	public void parseAddressForHostNameNoPort() {
+		testParseAddress("a.example.com", 8080, inetSocketAddress -> {
+			Assertions.assertThat(inetSocketAddress.getHostName()).isEqualTo("a.example.com");
+			Assertions.assertThat(inetSocketAddress.getPort()).isEqualTo(8080);
+		});
+	}
+
+	@Test
+	public void parseAddressForHostNameWithPort() {
+		testParseAddress("a.example.com:443", 8080, inetSocketAddress -> {
+			Assertions.assertThat(inetSocketAddress.getHostName()).isEqualTo("a.example.com");
+			Assertions.assertThat(inetSocketAddress.getPort()).isEqualTo(443);
+		});
+	}
+
+	@Test
+	public void parseAddressForIpV4NoPort() {
+		testParseAddress("192.0.2.60", 8080, inetSocketAddress -> {
+			Assertions.assertThat(inetSocketAddress.getHostName()).isEqualTo("192.0.2.60");
+			Assertions.assertThat(inetSocketAddress.getPort()).isEqualTo(8080);
+		});
+	}
+
+	@Test
+	public void parseAddressForIpV4WithPort() {
+		testParseAddress("192.0.2.60:443", 8080, inetSocketAddress -> {
+			Assertions.assertThat(inetSocketAddress.getHostName()).isEqualTo("192.0.2.60");
+			Assertions.assertThat(inetSocketAddress.getPort()).isEqualTo(443);
+		});
+	}
+
+	@Test
+	public void parseAddressForIpV6NoPortNoBrackets() {
+		testParseAddress("1abc:2abc:3abc:0:0:0:5abc:6abc", 8080, inetSocketAddress -> {
+			Assertions.assertThat(inetSocketAddress.getHostName()).isEqualTo("1abc:2abc:3abc:0:0:0:5abc:6abc");
+			Assertions.assertThat(inetSocketAddress.getPort()).isEqualTo(8080);
+		});
+	}
+
+	@Test
+	public void parseAddressForIpV6NoPortWithBrackets() {
+		testParseAddress("[1abc:2abc:3abc::5ABC:6abc]", 8080, inetSocketAddress -> {
+			Assertions.assertThat(inetSocketAddress.getHostName()).isEqualTo("1abc:2abc:3abc:0:0:0:5abc:6abc");
+			Assertions.assertThat(inetSocketAddress.getPort()).isEqualTo(8080);
+		});
+	}
+
+	@Test
+	public void parseAddressForIpV6WithPortAndBrackets_1() {
+		testParseAddress("[1abc:2abc:3abc::5ABC:6abc]:443", 8080, inetSocketAddress -> {
+			Assertions.assertThat(inetSocketAddress.getHostName()).isEqualTo("1abc:2abc:3abc:0:0:0:5abc:6abc");
+			Assertions.assertThat(inetSocketAddress.getPort()).isEqualTo(443);
+		});
+	}
+
+	@Test
+	public void parseAddressForIpV6WithPortAndBrackets_2() {
+		testParseAddress("[2001:db8:a0b:12f0::1]:dba2", 8080, inetSocketAddress -> {
+			Assertions.assertThat(inetSocketAddress.getHostName()).isEqualTo("2001:db8:a0b:12f0:0:0:0:1");
+			Assertions.assertThat(inetSocketAddress.getPort()).isEqualTo(8080);
+		});
+	}
 
 	private void testClientRequest(Consumer<HttpHeaders> clientRequestHeadersConsumer,
 			Consumer<HttpServerRequest> serverConsumer) {
@@ -234,9 +356,14 @@ public class ConnectionInfoTests {
 		assertThat(response).isEqualTo("OK");
 	}
 
+	private void testParseAddress(String address, int defaultPort, Consumer<InetSocketAddress> inetSocketAddressConsumer) {
+		inetSocketAddressConsumer.accept(ConnectionInfo.parseAddress(address, defaultPort));
+	}
+
 	@After
 	public void tearDown() {
-		this.connection.disposeNow();
+		if(null != this.connection)
+			this.connection.disposeNow();
 	}
 
 }

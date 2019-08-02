@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -76,7 +76,6 @@ public class BlockingConnectionTest {
 		DisposableServer simpleServer =
 				TcpServer.create()
 				         .handle((in, out) -> out
-						         .options(NettyPipeline.SendOptions::flushOnEach)
 						         .sendString(
 								         in.receive()
 								           .asString()
@@ -97,8 +96,7 @@ public class BlockingConnectionTest {
 
 		Connection simpleClient1 =
 				TcpClient.create().port(simpleServer.address().getPort())
-				         .handle((in, out) -> out.options(NettyPipeline.SendOptions::flushOnEach)
-				                                 .sendString(Flux.just("Hello", "World", "CONTROL"))
+				         .handle((in, out) -> out.sendString(Flux.just("Hello", "World", "CONTROL"))
 				                                 .then(in.receive()
 				                                        .asString()
 				                                        .takeUntil(s -> s.endsWith("DONE"))
@@ -114,8 +112,7 @@ public class BlockingConnectionTest {
 		Connection simpleClient2 =
 				TcpClient.create()
 				         .port(simpleServer.address().getPort())
-				         .handle((in, out) -> out.options(NettyPipeline.SendOptions::flushOnEach)
-				                                 .sendString(Flux.just("How", "Are", "You?", "CONTROL"))
+				         .handle((in, out) -> out.sendString(Flux.just("How", "Are", "You?", "CONTROL"))
 				                                 .then(in.receive()
 				                                        .asString()
 				                                        .takeUntil(s -> s.endsWith("DONE"))

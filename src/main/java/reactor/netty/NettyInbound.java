@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -32,6 +32,7 @@ public interface NettyInbound {
 
 	/**
 	 * A {@link Flux} extension that allows for extra decoding operators
+	 *
 	 * @return a new {@link ByteBufFlux}
 	 */
 	ByteBufFlux receive();
@@ -45,9 +46,8 @@ public interface NettyInbound {
 	Flux<?> receiveObject();
 
 	/**
-	 * Call the passed callback with a {@link Connection} to operate on the
-	 * underlying
-	 * {@link Channel} state. This allows for chaining inbound API.
+	 * Calls the passed callback with a {@link Connection} to operate on the
+	 * underlying {@link Channel} state. This allows for chaining inbound API.
 	 *
 	 * @param withConnection connection callback
 	 *

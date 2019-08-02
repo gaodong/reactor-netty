@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -21,21 +21,21 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 import javax.annotation.Nullable;
 
+import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelPromise;
-import io.netty.util.concurrent.DefaultPromise;
-import io.netty.util.concurrent.Future;
-import io.netty.util.concurrent.GenericFutureListener;
+import io.netty.util.ReferenceCounted;
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscription;
 import reactor.core.CoreSubscriber;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.MonoProcessor;
 import reactor.core.publisher.Operators;
 import reactor.netty.ByteBufFlux;
 import reactor.netty.Connection;
@@ -58,9 +58,7 @@ import static reactor.netty.ReactorNetty.format;
  * @since 0.6
  */
 public class ChannelOperations<INBOUND extends NettyInbound, OUTBOUND extends NettyOutbound>
-		extends DefaultPromise<Void>
-		implements NettyInbound, NettyOutbound, Connection, CoreSubscriber<Void>,
-		           ChannelPromise {
+		implements NettyInbound, NettyOutbound, Connection, CoreSubscriber<Void> {
 
 	/**
 	 * Add {@link NettyPipeline#ReactiveBridge} handler at the end of {@link Channel}
@@ -90,15 +88,19 @@ public class ChannelOperations<INBOUND extends NettyInbound, OUTBOUND extends Ne
 		                 .as(ChannelOperations.class);
 	}
 
-	final Connection         connection;
-	final FluxReceive        inbound;
-	final ConnectionObserver listener;
+	final Connection          connection;
+	final FluxReceive         inbound;
+	final ConnectionObserver  listener;
+	final MonoProcessor<Void> onTerminate;
 
 	@SuppressWarnings("unchecked")
 	volatile Subscription outboundSubscription;
 
 	protected ChannelOperations(ChannelOperations<INBOUND, OUTBOUND> replaced) {
-		this(replaced.connection, replaced.listener);
+		this.connection = replaced.connection;
+		this.listener = replaced.listener;
+		this.onTerminate = replaced.onTerminate;
+		this.inbound = new FluxReceive(this);
 	}
 
 	/**
@@ -108,9 +110,9 @@ public class ChannelOperations<INBOUND extends NettyInbound, OUTBOUND extends Ne
 	 * @param listener the events callback
 	 */
 	public ChannelOperations(Connection connection, ConnectionObserver listener) {
-		super(connection.channel().eventLoop());
 		this.connection = Objects.requireNonNull(connection, "connection");
 		this.listener = Objects.requireNonNull(listener, "listener");
+		this.onTerminate = MonoProcessor.create();
 		this.inbound = new FluxReceive(this);
 	}
 
@@ -154,10 +156,9 @@ public class ChannelOperations<INBOUND extends NettyInbound, OUTBOUND extends Ne
 
 	@Override
 	public void dispose() {
-		if (inbound.isDisposed()) {
-			return;
+		if (!inbound.isDisposed()) {
+			inbound.cancel();
 		}
-		inbound.cancel();
 		connection.dispose();
 	}
 
@@ -168,7 +169,16 @@ public class ChannelOperations<INBOUND extends NettyInbound, OUTBOUND extends Ne
 
 	@Override
 	public final boolean isDisposed() {
-		return !channel().isActive() || get(channel()) != this;
+		return !channel().isActive() || isSubscriptionDisposed();
+	}
+
+	/**
+	 * Return true if dispose subscription has been terminated
+	 *
+	 * @return true if dispose subscription has been terminated
+	 */
+	public final boolean isSubscriptionDisposed() {
+		return OUTBOUND_CLOSE.get(this) == Operators.cancelledSubscription();
 	}
 
 	@Override
@@ -184,24 +194,22 @@ public class ChannelOperations<INBOUND extends NettyInbound, OUTBOUND extends Ne
 
 	@Override
 	public final void onComplete() {
-		Subscription s =
-				OUTBOUND_CLOSE.getAndSet(this, Operators.cancelledSubscription());
-		if (s == Operators.cancelledSubscription() || isDisposed()) {
+		if (isDisposed()) {
 			return;
 		}
+		OUTBOUND_CLOSE.set(this, Operators.cancelledSubscription());
 		onOutboundComplete();
 	}
 
 	@Override
 	public final void onError(Throwable t) {
-		Subscription s =
-				OUTBOUND_CLOSE.getAndSet(this, Operators.cancelledSubscription());
-		if (s == Operators.cancelledSubscription() || isDisposed()) {
+		if (isDisposed()) {
 			if (log.isDebugEnabled()) {
 				log.debug(format(channel(), "An outbound error could not be processed"), t);
 			}
 			return;
 		}
+		OUTBOUND_CLOSE.set(this, Operators.cancelledSubscription());
 		onOutboundError(t);
 	}
 
@@ -228,15 +236,30 @@ public class ChannelOperations<INBOUND extends NettyInbound, OUTBOUND extends Ne
 	}
 
 	@Override
-	public NettyOutbound sendObject(Publisher<?> dataStream) {
-		return then(FutureMono.disposableWriteAndFlush(connection.channel(), dataStream));
+	@SuppressWarnings("unchecked")
+	public NettyOutbound send(Publisher<? extends ByteBuf> dataStream, Predicate<ByteBuf> predicate) {
+		if (dataStream instanceof Mono) {
+			return then(((Mono<?>)dataStream).flatMap(m -> FutureMono.from(channel().writeAndFlush(m)))
+			                                 .doOnDiscard(ByteBuf.class, ByteBuf::release));
+		}
+		return then(MonoSendMany.byteBufSource(dataStream, channel(), predicate));
+	}
+
+	@Override
+	@SuppressWarnings("unchecked")
+	public NettyOutbound sendObject(Publisher<?> dataStream, Predicate<Object> predicate) {
+		if (dataStream instanceof Mono) {
+			return then(((Mono<?>)dataStream).flatMap(m -> FutureMono.from(channel().writeAndFlush(m)))
+			                                 .doOnDiscard(ReferenceCounted.class, ReferenceCounted::release));
+		}
+		return then(MonoSendMany.objectSource(dataStream, channel(), predicate));
 	}
 
 	@Override
 	public NettyOutbound sendObject(Object message) {
-		onTerminate().subscribe(null, null, () -> ReactorNetty.safeRelease(message));
 		return then(FutureMono.deferFuture(() -> connection.channel()
-		                                                   .writeAndFlush(message)));
+		                                                   .writeAndFlush(message)),
+				() -> ReactorNetty.safeRelease(message));
 	}
 
 	@Override
@@ -265,7 +288,7 @@ public class ChannelOperations<INBOUND extends NettyInbound, OUTBOUND extends Ne
 		if (!isPersistent()) {
 			return connection.onDispose();
 		}
-		return FutureMono.from((Future<Void>)this).or(connection.onDispose());
+		return onTerminate.or(connection.onDispose());
 	}
 
 	/**
@@ -338,6 +361,9 @@ public class ChannelOperations<INBOUND extends NettyInbound, OUTBOUND extends Ne
 	 * React on inbound close (channel closed prematurely)
 	 */
 	protected void onInboundClose() {
+		if (inbound.receiver == null) {
+			inbound.cancel();
+		}
 		terminate();
 	}
 
@@ -374,18 +400,12 @@ public class ChannelOperations<INBOUND extends NettyInbound, OUTBOUND extends Ne
 			}
 
 			Operators.terminate(OUTBOUND_CLOSE, this);
-			listener.onStateChange(this, ConnectionObserver.State.DISCONNECTING);
 			// Do not call directly inbound.onInboundComplete()
 			// HttpClientOperations need to notify with error
 			// when there is no response state
 			onInboundComplete();
-			if (isPersistent()) {
-				channel().writeAndFlush(TERMINATED_OPS, this);
-			}
-			else {
-				// Returned value is deliberately ignored
-				setSuccess(null);
-			}
+			onTerminate.onComplete();
+			listener.onStateChange(this, ConnectionObserver.State.DISCONNECTING);
 		}
 	}
 
@@ -415,101 +435,6 @@ public class ChannelOperations<INBOUND extends NettyInbound, OUTBOUND extends Ne
 	protected final String formatName() {
 		return getClass().getSimpleName()
 		                 .replace("Operations", "");
-	}
-
-	@Override
-	@SuppressWarnings("FutureReturnValueIgnored")
-	public ChannelPromise setSuccess() {
-		// Returned value is deliberately ignored
-		setSuccess(null);
-		return this;
-	}
-
-	@Override
-	@SuppressWarnings("FutureReturnValueIgnored")
-	public ChannelPromise setSuccess(Void result) {
-		// Returned value is deliberately ignored
-		super.setSuccess(result);
-		return this;
-	}
-
-	@Override
-	public boolean trySuccess() {
-		return trySuccess(null);
-	}
-
-	@Override
-	public ChannelPromise unvoid() {
-		return this;
-	}
-
-	@Override
-	public boolean isVoid() {
-		return true;
-	}
-
-	@Override
-	@SuppressWarnings("FutureReturnValueIgnored")
-	public ChannelPromise setFailure(Throwable cause) {
-		// Returned value is deliberately ignored
-		super.setFailure(cause);
-		return this;
-	}
-
-	@Override
-	@SuppressWarnings("FutureReturnValueIgnored")
-	public ChannelPromise addListener(GenericFutureListener<? extends Future<? super Void>> listener) {
-		// Returned value is deliberately ignored
-		super.addListener(listener);
-		return this;
-	}
-
-	@Override
-	@SuppressWarnings("FutureReturnValueIgnored")
-	public ChannelPromise addListeners(GenericFutureListener<? extends Future<? super Void>>... listeners) {
-		// Returned value is deliberately ignored
-		super.addListeners(listeners);
-		return this;
-	}
-
-	@Override
-	@SuppressWarnings("FutureReturnValueIgnored")
-	public ChannelPromise removeListener(GenericFutureListener<? extends Future<? super Void>> listener) {
-		// Returned value is deliberately ignored
-		super.removeListener(listener);
-		return this;
-	}
-
-	@Override
-	@SuppressWarnings("FutureReturnValueIgnored")
-	public ChannelPromise removeListeners(GenericFutureListener<? extends Future<? super Void>>... listeners) {
-		// Returned value is deliberately ignored
-		super.removeListeners(listeners);
-		return this;
-	}
-
-	@Override
-	public ChannelPromise sync() throws InterruptedException {
-		super.sync();
-		return this;
-	}
-
-	@Override
-	public ChannelPromise await() throws InterruptedException {
-		super.await();
-		return this;
-	}
-
-	@Override
-	public ChannelPromise awaitUninterruptibly() {
-		super.awaitUninterruptibly();
-		return this;
-	}
-
-	@Override
-	public ChannelPromise syncUninterruptibly() {
-		super.syncUninterruptibly();
-		return this;
 	}
 
 	@Override

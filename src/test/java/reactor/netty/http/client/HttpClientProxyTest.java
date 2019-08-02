@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -23,31 +23,41 @@ import org.junit.ClassRule;
 import org.junit.Test;
 import reactor.core.publisher.Mono;
 import reactor.netty.DisposableServer;
+import reactor.netty.SocketUtils;
 import reactor.netty.http.server.HttpServer;
 import reactor.netty.tcp.ProxyProvider;
 import reactor.test.StepVerifier;
 
 import java.time.Duration;
 
-import static io.specto.hoverfly.junit.core.SimulationSource.classpath;
+import static io.specto.hoverfly.junit.core.SimulationSource.dsl;
+import static io.specto.hoverfly.junit.dsl.HoverflyDsl.service;
+import static io.specto.hoverfly.junit.dsl.ResponseCreators.success;
 
 /**
  * @author Violeta Georgieva
  */
 public class HttpClientProxyTest {
 
+	private static final int port = SocketUtils.findAvailableTcpPort();
+
 	@ClassRule
-	public static HoverflyRule hoverflyRule =
+	public static final HoverflyRule hoverflyRule =
 			HoverflyRule.inSimulationMode(
-					classpath("simulation.json"),
+					dsl(service("http://127.0.0.1:" + port)
+					        .get("/")
+					        .willReturn(success()
+					                .body("test")
+					                .header("Hoverfly", "Was-Here"))),
 					HoverflyConfig.localConfigs()
 					              .plainHttpTunneling());
+
 	private DisposableServer server;
 
 	@Before
 	public void setUp() {
 		server = HttpServer.create()
-		                   .port(7000)
+		                   .port(port)
 		                   .host("localhost")
 		                   .handle((req, res) -> res.sendString(Mono.just("test")))
 		                   .wiretap(true)
@@ -56,7 +66,9 @@ public class HttpClientProxyTest {
 
 	@After
 	public void tearDown() {
-		server.dispose();
+		if (server != null) {
+			server.dispose();
+		}
 	}
 
 	@Test
@@ -88,7 +100,7 @@ public class HttpClientProxyTest {
 				                                                                   .port(hoverflyRule.getProxyPort())))
 				          .wiretap(true)
 				          .get()
-				          .uri("http://127.0.0.1:7000/")
+				          .uri("http://127.0.0.1:" + port + "/")
 				          .responseSingle((response, body) -> Mono.zip(body.asString(),
 				                  Mono.just(response.responseHeaders()))))
 				    .expectNextMatches(t ->
@@ -129,7 +141,7 @@ public class HttpClientProxyTest {
 				                                                                   .nonProxyHosts("localhost")))
 				          .wiretap(true)
 				          .get()
-				          .uri("http://localhost:7000/")
+				          .uri("http://localhost:" + port + "/")
 				          .responseSingle((response, body) -> Mono.zip(body.asString(),
 				                  Mono.just(response.responseHeaders()))))
 				    .expectNextMatches(t ->

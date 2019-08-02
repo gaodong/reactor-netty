@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,6 +19,7 @@ package reactor.netty.http.client;
 import java.net.URI;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 
+import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
@@ -33,8 +34,11 @@ import io.netty.handler.codec.http.websocketx.PongWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.WebSocketClientHandshaker;
 import io.netty.handler.codec.http.websocketx.WebSocketClientHandshakerFactory;
 import io.netty.handler.codec.http.websocketx.WebSocketVersion;
+import org.reactivestreams.Publisher;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.netty.FutureMono;
+import reactor.netty.NettyOutbound;
 import reactor.netty.NettyPipeline;
 import reactor.netty.ReactorNetty;
 import reactor.netty.http.websocket.WebsocketInbound;
@@ -167,6 +171,11 @@ final class WebsocketClientOperations extends HttpClientOperations
 	}
 
 	@Override
+	public NettyOutbound send(Publisher<? extends ByteBuf> dataStream) {
+		return sendObject(Flux.from(dataStream).map(bytebufToWebsocketFrame));
+	}
+
+	@Override
 	public Mono<Void> sendClose() {
 		return sendClose(new CloseWebSocketFrame());
 	}
@@ -188,17 +197,17 @@ final class WebsocketClientOperations extends HttpClientOperations
 
 	Mono<Void> sendClose(CloseWebSocketFrame frame) {
 		if (CLOSE_SENT.get(this) == 0) {
-			onTerminate().subscribe(null, null, () -> ReactorNetty.safeRelease(frame));
+			//commented for now as we assume the close is always scheduled (deferFuture runs)
+			//onTerminate().subscribe(null, null, () -> ReactorNetty.safeRelease(frame));
 			return FutureMono.deferFuture(() -> {
 				if (CLOSE_SENT.getAndSet(this, 1) == 0) {
 					discard();
-					channel().pipeline().remove(NettyPipeline.ReactiveBridge);
 					return channel().writeAndFlush(frame)
 					                .addListener(ChannelFutureListener.CLOSE);
 				}
 				frame.release();
 				return channel().newSucceededFuture();
-			});
+			}).doOnCancel(() -> ReactorNetty.safeRelease(frame));
 		}
 		frame.release();
 		return Mono.empty();

@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -25,7 +25,6 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 
 import io.netty.bootstrap.Bootstrap;
-import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
@@ -141,7 +140,7 @@ public abstract class UdpClient {
 			b = configure();
 		}
 		catch (Throwable t){
-			Exceptions.throwIfFatal(t);
+			Exceptions.throwIfJvmFatal(t);
 			return Mono.error(t);
 		}
 		return connect(b);
@@ -355,18 +354,6 @@ public abstract class UdpClient {
 	}
 
 	/**
-	 * Apply a wire logger configuration using {@link UdpClient} category
-	 * and {@code DEBUG} logger level
-	 *
-	 * @return a new {@link UdpClient}
-	 * @deprecated Use {@link UdpClient#wiretap(boolean)}
-	 */
-	@Deprecated
-	public final UdpClient wiretap() {
-		return bootstrap(b -> BootstrapHandlers.updateLogSupport(b, LOGGING_HANDLER));
-	}
-
-	/**
 	 * Apply or remove a wire logger configuration using {@link UdpClient} category
 	 * and {@code DEBUG} logger level
 	 *
@@ -440,11 +427,7 @@ public abstract class UdpClient {
 					12012;
 
 	static final Bootstrap DEFAULT_BOOTSTRAP =
-			new Bootstrap().option(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
-			               .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 30000)
-			               .option(ChannelOption.AUTO_READ, false)
-			               .option(ChannelOption.SO_RCVBUF, 1024 * 1024)
-			               .option(ChannelOption.SO_SNDBUF, 1024 * 1024)
+			new Bootstrap().option(ChannelOption.AUTO_READ, false)
 			               .remoteAddress(NetUtil.LOCALHOST, DEFAULT_PORT);
 
 	static {

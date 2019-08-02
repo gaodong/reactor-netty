@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,6 +16,7 @@
 
 package reactor.netty.channel;
 
+import java.nio.channels.ClosedChannelException;
 import java.util.Queue;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
@@ -31,10 +32,10 @@ import reactor.core.CoreSubscriber;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Operators;
+import reactor.netty.ReactorNetty;
 import reactor.util.Logger;
 import reactor.util.Loggers;
 import reactor.util.concurrent.Queues;
-import reactor.util.context.Context;
 
 import static reactor.netty.ReactorNetty.format;
 
@@ -287,12 +288,12 @@ final class FluxReceive extends Flux<Object> implements Subscription, Disposable
 			try {
 				if (log.isDebugEnabled()){
 					if(msg instanceof ByteBuf) {
-						((ByteBuf) msg).touch("Unbounded receiver, bypass inbound " +
-								"buffer queue");
+						((ByteBuf) msg).touch(format(channel, "Unbounded receiver, bypass inbound " +
+								"buffer queue"));
 					}
 					else if (msg instanceof ByteBufHolder){
-						((ByteBufHolder) msg).touch("Unbounded receiver, bypass inbound " +
-								"buffer queue");
+						((ByteBufHolder) msg).touch(format(channel,"Unbounded receiver, bypass inbound " +
+								"buffer queue"));
 					}
 				}
 				receiver.onNext(msg);
@@ -310,11 +311,11 @@ final class FluxReceive extends Flux<Object> implements Subscription, Disposable
 			}
 			if (log.isDebugEnabled()){
 				if(msg instanceof ByteBuf) {
-					((ByteBuf) msg).touch("Buffered ByteBuf in Inbound Flux Queue");
+					((ByteBuf) msg).touch(format(channel,"Buffered ByteBuf in Inbound Flux Queue"));
 				}
 				else if (msg instanceof ByteBufHolder){
-					((ByteBufHolder) msg).touch("Buffered ByteBufHolder in Inbound Flux" +
-							" Queue");
+					((ByteBufHolder) msg).touch(format(channel,"Buffered ByteBufHolder in Inbound Flux" +
+							" Queue"));
 				}
 			}
 			q.offer(msg);
@@ -339,17 +340,33 @@ final class FluxReceive extends Flux<Object> implements Subscription, Disposable
 
 	final void onInboundError(Throwable err) {
 		if (isCancelled() || inboundDone) {
-			Context c = receiver == null ? Context.empty() : receiver.currentContext();
-			Operators.onErrorDropped(err, c);
+			if (log.isDebugEnabled()) {
+				log.warn(format(channel, "An exception has been observed post termination"), err);
+			} else if (log.isWarnEnabled()) {
+				log.warn(format(channel, "An exception has been observed post termination, use DEBUG level to see the full stack: {}"), err.toString());
+			}
 			return;
 		}
 		CoreSubscriber<?> receiver = this.receiver;
-		this.inboundError = err;
 		this.inboundDone = true;
-
 		if(channel.isActive()){
 			parent.markPersistent(false);
 		}
+
+		if (err instanceof OutOfMemoryError) {
+			if (log.isWarnEnabled()) {
+//				log.error(format(channel, "An attempt to allocate memory has failed"), err);
+			}
+			this.inboundError = ReactorNetty.wrapException(err);
+			parent.terminate(); //get rid of the resource
+		}
+		else if (err instanceof ClosedChannelException) {
+			this.inboundError = ReactorNetty.wrapException(err);
+		}
+		else {
+			this.inboundError = err;
+		}
+
 		if (receiverFastpath && receiver != null) {
 			//parent.listener.onReceiveError(channel, err);
 			receiver.onError(err);
@@ -364,6 +381,7 @@ final class FluxReceive extends Flux<Object> implements Subscription, Disposable
 			q.clear();
 		}
 		Throwable ex = inboundError;
+		receiver = null;
 		if (ex != null) {
 			//parent.listener.onReceiveError(channel, ex);
 			a.onError(ex);

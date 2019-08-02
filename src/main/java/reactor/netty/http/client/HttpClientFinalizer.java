@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -104,7 +104,7 @@ final class HttpClientFinalizer extends HttpClient implements HttpClient.Request
 	@Override
 	public HttpClientFinalizer send(Publisher<? extends ByteBuf> requestBody) {
 		Objects.requireNonNull(requestBody, "requestBody");
-		return send((req, out) -> out.sendObject(requestBody));
+		return send((req, out) -> out.send(requestBody));
 	}
 	@Override
 	public HttpClientFinalizer send(BiFunction<? super HttpClientRequest, ?
@@ -129,7 +129,7 @@ final class HttpClientFinalizer extends HttpClient implements HttpClient.Request
 			b = cachedConfiguration.configure();
 		}
 		catch (Throwable t) {
-			Exceptions.throwIfFatal(t);
+			Exceptions.throwIfJvmFatal(t);
 			return ByteBufFlux.fromInbound(Mono.error(t));
 		}
 		@SuppressWarnings("unchecked")

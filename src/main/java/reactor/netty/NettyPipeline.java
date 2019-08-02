@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,13 +16,10 @@
 
 package reactor.netty;
 
-import java.util.Objects;
 import java.util.function.BiConsumer;
-import java.util.function.Consumer;
 
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandler;
-import org.reactivestreams.Publisher;
 
 /**
  * Constant for names used when adding/removing {@link io.netty.channel.ChannelHandler}.
@@ -68,66 +65,13 @@ public interface NettyPipeline {
 	String ChunkedWriter      = LEFT + "chunkedWriter";
 	String LoggingHandler     = LEFT + "loggingHandler";
 	String CompressionHandler = LEFT + "compressionHandler";
+	String TcpMetricsHandler  = LEFT + "tcpMetricsHandler";
+	String HttpMetricsHandler = LEFT + "httpMetricsHandler";
+	String SslMetricsHandler  = LEFT + "sslMetricsHandler";
+	String ConnectMetricsHandler = LEFT + "connectMetricsHandler";
 	String WsCompressionHandler = LEFT + "wsCompressionHandler";
-
-	/**
-	 * A builder for sending strategy, similar prefixed methods being mutually exclusive
-	 * (flushXxx, prefetchXxx, requestXxx).
-	 */
-	interface SendOptions {
-
-		/**
-		 * Make the underlying channel flush on a terminated {@link Publisher} (default).
-		 *
-		 * @return this builder
-		 */
-		SendOptions flushOnBoundary();
-
-		/**
-		 * Make the underlying channel flush item by item.
-		 * Flush operation will be executed at some time in the future.
-		 *
-		 * @return this builder
-		 */
-		default SendOptions flushOnEach() {
-			return flushOnEach(true);
-		}
-
-		/**
-		 * Make the underlying channel flush item by item.
-		 * Whether flush operation is executed immediately
-		 * or not is specified by <code>withEventLoop</code> parameter.
-		 *
-		 * @param withEventLoop flag specifying whether flush operation
-		 *                      will be executed immediately or at some time in the future
-		 * @return this builder
-		 */
-		SendOptions flushOnEach(boolean withEventLoop);
-
-
-	}
-
-	/**
-	 * An container transporting a new {@link SendOptions}, eventually bound to a
-	 * specific {@link Publisher}
-	 */
-	final class SendOptionsChangeEvent {
-
-		final Consumer<? super SendOptions> configurator;
-
-		SendOptionsChangeEvent(Consumer<? super SendOptions> configurator) {
-			this.configurator = Objects.requireNonNull(configurator, "configurator");
-		}
-
-		/**
-		 * Return the send configurator
-		 *
-		 * @return the send configurator
-		 */
-		public Consumer<? super SendOptions> configurator() {
-			return configurator;
-		}
-	}
+	String ProxyProtocolDecoder = LEFT + "proxyProtocolDecoder";
+	String ProxyProtocolReader  = LEFT + "proxyProtocolReader";
 
 	/**
 	 * Create a new {@link ChannelInboundHandler} that will invoke

@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -20,11 +20,14 @@ import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.cookie.ServerCookieDecoder;
 import io.netty.handler.codec.http.cookie.ServerCookieEncoder;
 import io.netty.handler.codec.http2.Http2DataFrame;
+import io.netty.handler.codec.http2.Http2Frame;
 import io.netty.handler.codec.http2.Http2Headers;
 import io.netty.handler.codec.http2.Http2HeadersFrame;
 import io.netty.util.ReferenceCountUtil;
 import reactor.netty.Connection;
 import reactor.netty.ConnectionObserver;
+
+import static reactor.netty.ReactorNetty.format;
 
 /**
  * @author Stephane Maldini
@@ -48,28 +51,37 @@ public class HttpToH2Operations extends HttpServerOperations {
 
 	@Override
 	protected void onInboundNext(ChannelHandlerContext ctx, Object msg) {
-		if (msg instanceof Http2DataFrame) {
-			Http2DataFrame data = (Http2DataFrame) msg;
-			super.onInboundNext(ctx, data.content());
-			if (data.isEndStream()) {
-				onInboundComplete();
-			}
-			return;
-		}
-		else if(msg instanceof Http2HeadersFrame) {
-			try {
-				listener().onStateChange(this, HttpServerState.REQUEST_RECEIVED);
-			}
-			catch (Exception e) {
-				onInboundError(e);
-				ReferenceCountUtil.release(msg);
+		if (msg instanceof Http2Frame) {
+			if (msg instanceof Http2DataFrame) {
+				Http2DataFrame data = (Http2DataFrame) msg;
+				super.onInboundNext(ctx, data);
+				if (data.isEndStream()) {
+					onInboundComplete();
+				}
 				return;
 			}
-			if (((Http2HeadersFrame) msg).isEndStream()) {
-				super.onInboundNext(ctx, msg);
+
+			if(msg instanceof Http2HeadersFrame) {
+				try {
+					listener().onStateChange(this, HttpServerState.REQUEST_RECEIVED);
+				}
+				catch (Exception e) {
+					onInboundError(e);
+					ReferenceCountUtil.release(msg);
+					return;
+				}
+				if (((Http2HeadersFrame) msg).isEndStream()) {
+					super.onInboundNext(ctx, msg);
+				}
+				return;
+			}
+
+			if (log.isDebugEnabled()){
+				log.debug(format(channel(), "Unused H2 frame " + msg.toString()));
 			}
 			return;
 		}
+
 		super.onInboundNext(ctx, msg);
 	}
 }

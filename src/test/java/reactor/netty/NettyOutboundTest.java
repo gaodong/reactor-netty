@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 import javax.net.ssl.SSLException;
 
 import io.netty.buffer.ByteBuf;
@@ -87,12 +88,17 @@ public class NettyOutboundTest {
 		Connection mockContext = () -> channel;
 		NettyOutbound outbound = new NettyOutbound() {
 			@Override
-			public NettyOutbound sendObject(Publisher<?> dataStream) {
+			public NettyOutbound sendObject(Publisher<?> dataStream, Predicate<Object> predicate) {
 				return this;
 			}
 
 			@Override
 			public NettyOutbound sendObject(Object message) {
+				return this;
+			}
+
+			@Override
+			public NettyOutbound send(Publisher<? extends ByteBuf> dataStream, Predicate<ByteBuf> predicate) {
 				return this;
 			}
 
@@ -174,12 +180,17 @@ public class NettyOutboundTest {
 		Connection mockContext = () -> channel;
 		NettyOutbound outbound = new NettyOutbound() {
 			@Override
-			public NettyOutbound sendObject(Publisher<?> dataStream) {
+			public NettyOutbound sendObject(Publisher<?> dataStream, Predicate<Object> predicate) {
 				return this;
 			}
 
 			@Override
 			public NettyOutbound sendObject(Object message) {
+				return this;
+			}
+
+			@Override
+			public NettyOutbound send(Publisher<? extends ByteBuf> dataStream, Predicate<ByteBuf> predicate) {
 				return this;
 			}
 
@@ -258,12 +269,17 @@ public class NettyOutboundTest {
 		Connection mockContext = () -> channel;
 		NettyOutbound outbound = new NettyOutbound() {
 			@Override
-			public NettyOutbound sendObject(Publisher<?> dataStream) {
+			public NettyOutbound sendObject(Publisher<?> dataStream, Predicate<Object> predicate) {
 				return this;
 			}
 
 			@Override
 			public NettyOutbound sendObject(Object message) {
+				return this;
+			}
+
+			@Override
+			public NettyOutbound send(Publisher<? extends ByteBuf> dataStream, Predicate<ByteBuf> predicate) {
 				return this;
 			}
 

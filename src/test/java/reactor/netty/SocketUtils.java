@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -35,7 +35,7 @@ import javax.net.ServerSocketFactory;
  * @author Ben Hale
  * @author Arjen Poutsma
  * @author Gunnar Hillert
- * @see <a href="http://spring.io">Borrowed from the Spring Framework</a>
+ * @see <a href="https://spring.io">Borrowed from the Spring Framework</a>
  * */
 public final class SocketUtils {
 

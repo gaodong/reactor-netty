@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -29,6 +29,7 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import javax.annotation.Nullable;
 
+import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
@@ -120,6 +121,7 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 		this.nettyRequest = nettyRequest;
 		this.nettyResponse = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
 		this.responseHeaders = nettyResponse.headers();
+		this.responseHeaders.set(HttpHeaderNames.TRANSFER_ENCODING, HttpHeaderValues.CHUNKED);
 		this.compressionPredicate = compressionPredicate;
 		this.cookieHolder = Cookies.newServerRequestHolder(requestHeaders(), decoder);
 		this.connectionInfo = connectionInfo;
@@ -144,20 +146,21 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 	}
 
 	@Override
-	protected HttpMessage newFullEmptyBodyMessage() {
+	protected HttpMessage newFullBodyMessage(ByteBuf body) {
 		HttpResponse res =
-				new DefaultFullHttpResponse(version(), status(), EMPTY_BUFFER);
+				new DefaultFullHttpResponse(version(), status(), body);
 
 		if (!HttpMethod.HEAD.equals(method())) {
 			responseHeaders.remove(HttpHeaderNames.TRANSFER_ENCODING);
 			if (!HttpResponseStatus.NOT_MODIFIED.equals(status())) {
-				responseHeaders.setInt(HttpHeaderNames.CONTENT_LENGTH, 0);
+
+				if (HttpUtil.getContentLength(nettyResponse, -1) == -1) {
+					responseHeaders.setInt(HttpHeaderNames.CONTENT_LENGTH, body.readableBytes());
+				}
 			}
 		}
 
 		res.headers().set(responseHeaders);
-
-		markPersistent(true);
 		return res;
 	}
 
@@ -230,10 +233,7 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 
 	@Override
 	public boolean isWebsocket() {
-		return requestHeaders().contains(HttpHeaderNames.UPGRADE,
-				HttpHeaderValues.WEBSOCKET,
-				true)
-				&& HttpResponseStatus.SWITCHING_PROTOCOLS.equals(status());
+		return get(channel()) instanceof WebsocketServerOperations;
 	}
 
 	@Override
@@ -323,7 +323,7 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 	@Override
 	public Mono<Void> send() {
 		if (markSentHeaderAndBody()) {
-			HttpMessage response = newFullEmptyBodyMessage();
+			HttpMessage response = newFullBodyMessage(EMPTY_BUFFER);
 			return FutureMono.deferFuture(() -> channel().writeAndFlush(response));
 		}
 		else {
@@ -460,10 +460,6 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 
 	@Override
 	protected void preSendHeadersAndStatus(){
-		if (!HttpUtil.isTransferEncodingChunked(nettyResponse) && !HttpUtil.isContentLengthSet(
-				nettyResponse)) {
-			markPersistent(false);
-		}
 		if (HttpResponseStatus.NOT_MODIFIED.equals(status())) {
 			responseHeaders.remove(HttpHeaderNames.TRANSFER_ENCODING)
 			               .remove(HttpHeaderNames.CONTENT_LENGTH);
@@ -489,7 +485,7 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 						"zero-length header"));
 			}
 
-			f = channel().writeAndFlush(newFullEmptyBodyMessage());
+			f = channel().writeAndFlush(newFullBodyMessage(EMPTY_BUFFER));
 		}
 		else if (markSentBody()) {
 			f = channel().writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT);
@@ -514,9 +510,23 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 			return;
 		}
 
-		((HttpServerOperations)ops).terminate();
+		//Try to defer the disposing to leave a chance for any synchronous complete following this callback
+		if (!ops.isSubscriptionDisposed()) {
+			ch.eventLoop()
+			  .execute(((HttpServerOperations) ops)::terminate);
+		}
+		else {
+			//if already disposed, we can immediately call terminate
+			((HttpServerOperations) ops).terminate();
+		}
 	}
 
+	/**
+	 * There is no need of invoking {@link #discard()}, the inbound will
+	 * be canceled on channel inactive event if there is no subscriber available
+	 *
+	 * @param err the {@link Throwable} cause
+	 */
 	@Override
 	protected void onOutboundError(Throwable err) {
 
@@ -531,6 +541,8 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 			HttpResponse response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1,
 					HttpResponseStatus.INTERNAL_SERVER_ERROR);
 			response.headers()
+			        .set(responseHeaders)
+			        .remove(HttpHeaderValues.CHUNKED)
 			        .setInt(HttpHeaderNames.CONTENT_LENGTH, 0)
 			        .set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
 			channel().writeAndFlush(response)
@@ -595,7 +607,7 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 
 		@Override
 		public void onError(Throwable t) {
-			ops.onOutboundError(t);
+			ops.onError(t);
 		}
 
 		@Override

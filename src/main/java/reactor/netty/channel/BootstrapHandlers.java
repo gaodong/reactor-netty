@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -166,7 +166,9 @@ public abstract class BootstrapHandlers {
 	public static ServerBootstrap removeConfiguration(ServerBootstrap b, String name) {
 		Objects.requireNonNull(b, "bootstrap");
 		Objects.requireNonNull(name, "name");
-		b.childHandler(removeConfiguration(b.config().childHandler(), name));
+		if (b.config().childHandler() != null) {
+			b.childHandler(removeConfiguration(b.config().childHandler(), name));
+		}
 		return b;
 	}
 
@@ -207,17 +209,16 @@ public abstract class BootstrapHandlers {
 	 * @return current {@link ChannelOperations.OnSetup} factory or null
 	 *
 	 */
-	@SuppressWarnings("unchecked")
 	public static ChannelOperations.OnSetup channelOperationFactory(AbstractBootstrap<?, ?> b) {
 		Objects.requireNonNull(b, "bootstrap");
 		ChannelOperations.OnSetup ops =
 				(ChannelOperations.OnSetup) b.config()
 				                             .options()
 				                             .get(OPS_OPTION);
-		b.option(OPS_OPTION, null);
 		if (ops == null) {
 			return ChannelOperations.OnSetup.empty(); //will not be triggered in
 		}
+		b.option(OPS_OPTION, null);
 		return ops;
 	}
 
@@ -243,17 +244,16 @@ public abstract class BootstrapHandlers {
 	 * @return current {@link ConnectionObserver} or null
 	 *
 	 */
-	@SuppressWarnings("unchecked")
 	public static ConnectionObserver connectionObserver(AbstractBootstrap<?, ?> b) {
 		Objects.requireNonNull(b, "bootstrap");
 		ConnectionObserver obs =
 				(ConnectionObserver) b.config()
 				                             .options()
 				                             .get(OBSERVER_OPTION);
-		b.option(OBSERVER_OPTION, null);
 		if (obs == null) {
 			return ConnectionObserver.emptyListener(); //will not be triggered in
 		}
+		b.option(OBSERVER_OPTION, null);
 		return obs;
 	}
 
@@ -279,16 +279,15 @@ public abstract class BootstrapHandlers {
 	 * @return current {@link ConnectionObserver} or null
 	 *
 	 */
-	@SuppressWarnings("unchecked")
 	public static ConnectionObserver childConnectionObserver(ServerBootstrap b) {
 		Objects.requireNonNull(b, "bootstrap");
 		ConnectionObserver obs = (ConnectionObserver) b.config()
 		                                               .childOptions()
 		                                               .get(OBSERVER_OPTION);
-		b.childOption(OBSERVER_OPTION, null);
 		if (obs == null) {
 			return ConnectionObserver.emptyListener(); //will not be triggered in
 		}
+		b.childOption(OBSERVER_OPTION, null);
 		return obs;
 	}
 
@@ -554,8 +553,8 @@ public abstract class BootstrapHandlers {
 	BootstrapHandlers() {
 	}
 
-	static final ChannelOption<ChannelOperations.OnSetup> OPS_OPTION = ChannelOption.newInstance("ops_factory");
-	static final ChannelOption<ConnectionObserver> OBSERVER_OPTION = ChannelOption.newInstance("connectionObserver");
+	static final ChannelOption<ChannelOperations.OnSetup> OPS_OPTION = ChannelOption.valueOf("ops_factory");
+	static final ChannelOption<ConnectionObserver> OBSERVER_OPTION = ChannelOption.valueOf("connectionObserver");
 
 
 	static final class LoggingHandlerSupportConsumer

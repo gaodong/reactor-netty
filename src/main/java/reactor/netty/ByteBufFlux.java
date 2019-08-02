@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -32,6 +32,7 @@ import io.netty.buffer.Unpooled;
 import io.netty.util.IllegalReferenceCountException;
 import org.reactivestreams.Publisher;
 import reactor.core.CoreSubscriber;
+import reactor.core.Fuseable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.FluxOperator;
 import reactor.core.publisher.Mono;
@@ -42,7 +43,7 @@ import reactor.core.publisher.Mono;
  *
  * @author Stephane Maldini
  */
-public final class ByteBufFlux extends FluxOperator<ByteBuf, ByteBuf> {
+public class ByteBufFlux extends FluxOperator<ByteBuf, ByteBuf> {
 
 	/**
 	 * Decorate as {@link ByteBufFlux}
@@ -63,11 +64,9 @@ public final class ByteBufFlux extends FluxOperator<ByteBuf, ByteBuf> {
 	 *
 	 * @return a {@link ByteBufFlux}
 	 */
-	public static ByteBufFlux fromInbound(Publisher<?> source,
-			ByteBufAllocator allocator) {
+	public static ByteBufFlux fromInbound(Publisher<?> source, ByteBufAllocator allocator) {
 		Objects.requireNonNull(allocator, "allocator");
-		return new ByteBufFlux(Flux.from(source)
-		                           .map(bytebufExtractor), allocator);
+		return maybeFuse(Flux.from(ReactorNetty.publisherOrScalarMap(source, bytebufExtractor)), allocator);
 	}
 
 
@@ -84,14 +83,13 @@ public final class ByteBufFlux extends FluxOperator<ByteBuf, ByteBuf> {
 
 	public static ByteBufFlux fromString(Publisher<? extends String> source, Charset charset, ByteBufAllocator allocator) {
 		Objects.requireNonNull(allocator, "allocator");
-		return new ByteBufFlux(
-				Flux.from(source)
-				    .map(s -> {
-				        ByteBuf buffer = allocator.buffer();
-				        buffer.writeCharSequence(s, charset);
-				        return buffer;
-				    }),
-				allocator);
+		return maybeFuse(
+				Flux.from(ReactorNetty.publisherOrScalarMap(
+						source, s -> {
+							ByteBuf buffer = allocator.buffer();
+							buffer.writeCharSequence(s, charset);
+							return buffer;
+						})), allocator);
 	}
 
 	/**
@@ -153,23 +151,27 @@ public final class ByteBufFlux extends FluxOperator<ByteBuf, ByteBuf> {
 		if (maxChunkSize < 1) {
 			throw new IllegalArgumentException("chunk size must be strictly positive, " + "was: " + maxChunkSize);
 		}
-		return new ByteBufFlux(Flux.generate(() -> FileChannel.open(path), (fc, sink) -> {
-			ByteBuf buf = allocator.buffer();
-			try {
-				if (buf.writeBytes(fc, maxChunkSize) < 0) {
-					buf.release();
-					sink.complete();
-				}
-				else {
-					sink.next(buf);
-				}
-			}
-			catch (IOException e) {
-				buf.release();
-				sink.error(e);
-			}
-			return fc;
-		}), allocator);
+		return maybeFuse(
+				Flux.generate(() -> FileChannel.open(path),
+				              (fc, sink) -> {
+				                  ByteBuf buf = allocator.buffer();
+				                  try {
+				                      if (buf.writeBytes(fc, maxChunkSize) < 0) {
+				                          buf.release();
+				                          sink.complete();
+				                      }
+				                      else {
+				                          sink.next(buf);
+				                      }
+				                  }
+				                  catch (IOException e) {
+				                      buf.release();
+				                      sink.error(e);
+				                  }
+				                  return fc;
+				              },
+				              ReactorNetty.fileCloser),
+				allocator);
 	}
 
 	/**
@@ -211,7 +213,7 @@ public final class ByteBufFlux extends FluxOperator<ByteBuf, ByteBuf> {
 	 *
 	 * @return a {@link InputStream} inbound {@link Flux}
 	 */
-	public Flux<InputStream> asInputStream() {
+	public final Flux<InputStream> asInputStream() {
 		return handle((bb, sink) -> {
 			try {
 				sink.next(new ByteBufMono.ReleasingInputStream(bb));
@@ -254,12 +256,24 @@ public final class ByteBufFlux extends FluxOperator<ByteBuf, ByteBuf> {
 	 *
 	 * @return {@link ByteBufMono} of aggregated {@link ByteBuf}
 	 */
-	public ByteBufMono aggregate() {
+	public final ByteBufMono aggregate() {
 		return Mono.using(alloc::compositeBuffer,
-				b -> this.reduce(b, (prev, next) -> prev.addComponent(next.retain()))
-				         .doOnNext(cbb -> cbb.writerIndex(cbb.capacity()))
+				b -> this.reduce(b,
+				                 (prev, next) -> {
+				                     if (prev.refCnt() > 0) {
+				                         return prev.addComponent(true, next.retain());
+				                     }
+				                     else {
+				                         return prev;
+				                     }
+				                 })
 				         .filter(ByteBuf::isReadable),
-				ByteBuf::release).as(ByteBufMono::new);
+				b -> {
+				    if (b.refCnt() > 0) {
+				        b.release();
+				    }
+				})
+				.as(ByteBufMono::maybeFuse);
 	}
 
 	/**
@@ -268,7 +282,7 @@ public final class ByteBufFlux extends FluxOperator<ByteBuf, ByteBuf> {
 	 *
 	 * @return {@link ByteBufMono} of retained {@link ByteBuf}
 	 */
-	public ByteBufMono multicast() {
+	public final ByteBufMono multicast() {
 		throw new UnsupportedOperationException("Not yet implemented");
 	}
 
@@ -278,8 +292,8 @@ public final class ByteBufFlux extends FluxOperator<ByteBuf, ByteBuf> {
 	 *
 	 * @return {@link ByteBufFlux} of retained {@link ByteBuf}
 	 */
-	public ByteBufFlux retain() {
-		return new ByteBufFlux(doOnNext(ByteBuf::retain), alloc);
+	public final ByteBufFlux retain() {
+		return maybeFuse(doOnNext(ByteBuf::retain), alloc);
 	}
 
 	final ByteBufAllocator alloc;
@@ -289,9 +303,23 @@ public final class ByteBufFlux extends FluxOperator<ByteBuf, ByteBuf> {
 		this.alloc = allocator;
 	}
 
+	static final class ByteBufFluxFuseable extends ByteBufFlux implements Fuseable {
+
+		ByteBufFluxFuseable(Flux<ByteBuf> source, ByteBufAllocator allocator) {
+			super(source, allocator);
+		}
+	}
+
 	@Override
 	public void subscribe(CoreSubscriber<? super ByteBuf> s) {
 		source.subscribe(s);
+	}
+
+	static ByteBufFlux maybeFuse(Flux<ByteBuf> source, ByteBufAllocator allocator) {
+		if (source instanceof Fuseable) {
+			return new ByteBufFluxFuseable(source, allocator);
+		}
+		return new ByteBufFlux(source, allocator);
 	}
 
 	/**

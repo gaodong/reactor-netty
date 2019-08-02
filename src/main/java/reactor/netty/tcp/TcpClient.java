@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -26,7 +26,6 @@ import java.util.function.Supplier;
 import javax.annotation.Nullable;
 
 import io.netty.bootstrap.Bootstrap;
-import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
@@ -49,6 +48,7 @@ import reactor.netty.resources.ConnectionProvider;
 import reactor.netty.resources.LoopResources;
 import reactor.util.Logger;
 import reactor.util.Loggers;
+import reactor.util.Metrics;
 
 import static reactor.netty.ReactorNetty.format;
 
@@ -180,7 +180,7 @@ public abstract class TcpClient {
 			b = configure();
 		}
 		catch (Throwable t) {
-			Exceptions.throwIfFatal(t);
+			Exceptions.throwIfJvmFatal(t);
 			return Mono.error(t);
 		}
 		return connect(b);
@@ -495,21 +495,6 @@ public abstract class TcpClient {
 	}
 
 	/**
-	 * Apply an SSL configuration customization via the passed {@link SslContext}.
-	 * with a default value of {@code 10} seconds handshake timeout unless
-	 * the environment property {@code reactor.netty.tcp.sslHandshakeTimeout} is set.
-	 *
-	 * @param sslContext The context to set when configuring SSL
-	 *
-	 * @return a new {@link TcpClient}
-	 * @deprecated Use {@link TcpClient#secure(Consumer)}
-	 */
-	@Deprecated
-	public final TcpClient secure(SslContext sslContext) {
-		return secure(sslProviderBuilder -> sslProviderBuilder.sslContext(sslContext));
-	}
-
-	/**
 	 * Apply an SSL configuration via the passed {@link SslProvider}.
 	 *
 	 * @param sslProvider The provider to set when configuring SSL
@@ -533,15 +518,28 @@ public abstract class TcpClient {
 	}
 
 	/**
-	 * Apply a wire logger configuration using {@link TcpClient} category
-	 * and {@code DEBUG} logger level
+	 * Specifies whether the metrics are enabled on the {@link TcpClient},
+	 * assuming Micrometer is on the classpath.
+	 * if {@code name } is {@code NULL } - {@code reactor.netty.tcp.client}
+	 * will be used as a name.
 	 *
+	 * @param metricsEnabled if true enables the metrics on the client.
+	 * @param name the name to be used for the metrics
 	 * @return a new {@link TcpClient}
-	 * @deprecated Use {@link TcpClient#wiretap(boolean)}
 	 */
-	@Deprecated
-	public final TcpClient wiretap() {
-		return bootstrap(b -> BootstrapHandlers.updateLogSupport(b, LOGGING_HANDLER));
+	public final TcpClient metrics(boolean metricsEnabled, @Nullable String name) {
+		if (metricsEnabled) {
+			if (!Metrics.isInstrumentationAvailable()) {
+				throw new UnsupportedOperationException(
+						"To enable metrics, you must add the dependency `io.micrometer:micrometer-core`" +
+								" to the class path first");
+			}
+
+			return bootstrap(b -> TcpUtils.updateMetricsSupport(b, name));
+		}
+		else {
+			return bootstrap(TcpUtils::removeMetricsSupport);
+		}
 	}
 
 	/**
@@ -598,14 +596,8 @@ public abstract class TcpClient {
 					12012;
 
 	static final Bootstrap DEFAULT_BOOTSTRAP =
-			new Bootstrap().option(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
-			               .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 30000)
-			               .option(ChannelOption.AUTO_READ, false)
-			               .option(ChannelOption.SO_RCVBUF, 1024 * 1024)
-			               .option(ChannelOption.SO_SNDBUF, 1024 * 1024)
-			               .remoteAddress(
-			                   InetSocketAddressUtil.createUnresolved(NetUtil.LOCALHOST.getHostAddress(),
-			                                                          DEFAULT_PORT));
+			new Bootstrap().option(ChannelOption.AUTO_READ, false)
+			               .remoteAddress(InetSocketAddressUtil.createUnresolved(NetUtil.LOCALHOST.getHostAddress(), DEFAULT_PORT));
 
 	static {
 		BootstrapHandlers.channelOperationFactory(DEFAULT_BOOTSTRAP, TcpUtils.TCP_OPS);

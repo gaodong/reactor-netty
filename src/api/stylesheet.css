@@ -17,6 +17,10 @@ body {
     color:#34302d;
 }
 
+.marble {
+    max-width: 800px;
+}
+
 a:link, a:visited {
     text-decoration:none;
     color:#6db33f;
@@ -29,6 +33,10 @@ a:active {
     text-decoration:none;
     color:#6db33f;
 }
+a[href^="http"] {
+    color: #16906a;
+}
+
 a[name] {
     color:#353833;
 }
@@ -100,7 +108,7 @@ Document title and Copyright styles
     position: absolute;
     right: 2px;
     top: 10px;
-    background: url(http://projectreactor.io/assets/img/logo-2x.png) no-repeat 0 -30px;
+    background: url(https://projectreactor.io/assets/img/logo-2x.png) no-repeat 0 -30px;
     background-size: 189px 60px;
     height: 40px;
     width: 44px;

@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -46,29 +46,32 @@ import javax.net.ssl.SSLException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.group.ChannelGroup;
+import io.netty.channel.group.DefaultChannelGroup;
 import io.netty.handler.codec.LineBasedFrameDecoder;
 import io.netty.handler.codec.json.JsonObjectDecoder;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.SslProvider;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
 import io.netty.util.NetUtil;
+import io.netty.util.concurrent.DefaultEventExecutor;
 import org.assertj.core.api.Assertions;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Ignore;
 import org.junit.Test;
-import org.reactivestreams.Processor;
 import org.reactivestreams.Publisher;
 import reactor.core.Exceptions;
-import reactor.core.publisher.EmitterProcessor;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.MonoProcessor;
-import reactor.core.publisher.WorkQueueProcessor;
 import reactor.core.scheduler.Schedulers;
 import reactor.netty.Connection;
+import reactor.netty.ConnectionObserver;
 import reactor.netty.DisposableServer;
+import reactor.netty.FutureMono;
 import reactor.netty.NettyInbound;
 import reactor.netty.NettyOutbound;
 import reactor.netty.SocketUtils;
@@ -107,14 +110,19 @@ public class TcpServerTests {
 	}
 
 	@Test
-	public void tcpServerHandlesJsonPojosOverSsl() throws Exception {
+		public void tcpServerHandlesJsonPojosOverSsl() throws Exception {
 		final CountDownLatch latch = new CountDownLatch(2);
 
 		SelfSignedCertificate cert = new SelfSignedCertificate();
-		SslContextBuilder serverOptions = SslContextBuilder.forServer(cert.certificate(), cert.privateKey());
+		SslContextBuilder serverOptions = SslContextBuilder.forServer(cert.certificate(), cert.privateKey())
+		                                                   .sslProvider(SslProvider.JDK);
 		SslContext clientOptions = SslContextBuilder.forClient()
 		                                            .trustManager(InsecureTrustManagerFactory.INSTANCE)
+		                                            .sslProvider(SslProvider.JDK)
 		                                            .build();
+
+		log.debug("Using SslContext: {}", clientOptions);
+
 		final TcpServer server =
 				TcpServer.create()
 				         .host("localhost")
@@ -283,51 +291,6 @@ public class TcpServerTests {
 	}
 
 	@Test
-	@Ignore
-	public void test5() throws Exception {
-		//Hot stream of data, could be injected from anywhere
-		EmitterProcessor<String> broadcaster = EmitterProcessor.create();
-
-		//Get a reference to the tail of the operation pipeline (microbatching + partitioning)
-		final Processor<List<String>, List<String>> processor =
-				WorkQueueProcessor.<List<String>>builder().autoCancel(false).build();
-
-		broadcaster
-				//transform 10 data in a [] of 10 elements or wait up to 1 Second before emitting whatever the list contains
-				.bufferTimeout(10, Duration.ofSeconds(1))
-				.log("broadcaster")
-				.subscribe(processor);
-
-		//on a server dispatching data on the default shared dispatcher, and serializing/deserializing as string
-		//Listen for anything exactly hitting the root URI and route the incoming connection request to the callback
-		DisposableServer s = HttpServer.create()
-		                               .port(0)
-		                               .route(r -> r.get("/", (request, response) -> {
-		                                   //prepare a response header to be appended first before any reply
-		                                   response.addHeader("X-CUSTOM", "12345");
-		                                   //attach to the shared tail, take the most recent generated substream and merge it to the high level stream
-		                                   //returning a stream of String from each microbatch merged
-		                                   return response.sendString(Flux.from(processor)
-		                                                                  //split each microbatch data into individual data
-		                                                                  .flatMap(Flux::fromIterable)
-		                                                                  .take(Duration.ofSeconds(5))
-		                                                                  .concatWith(Flux.just("end\n")));
-		                               }))
-		                               .wiretap(true)
-		                               .bindNow();
-
-		assertNotNull(s);
-
-		for (int i = 0; i < 50; i++) {
-			Thread.sleep(500);
-			broadcaster.onNext(System.currentTimeMillis() + "\n");
-		}
-
-		s.disposeNow();
-
-	}
-
-	@Test
 	public void testIssue462() throws InterruptedException {
 
 		final CountDownLatch countDownLatch = new CountDownLatch(1);
@@ -398,7 +361,7 @@ public class TcpServerTests {
 
 	@Test
 	public void gettingOptionsDuplicates() {
-		TcpServer server = TcpServer.create().host("foo").port(123);
+		TcpServer server = TcpServer.create().host("example.com").port(123);
 		Assertions.assertThat(server.configure())
 		          .isNotSameAs(TcpServerBind.INSTANCE.serverBootstrap)
 		          .isNotSameAs(server.configure());
@@ -810,8 +773,7 @@ public class TcpServerTests {
 				         .doOnConnection(c -> c.addHandlerLast("codec",
 				                                               new LineBasedFrameDecoder(256)))
 				         .handle((in, out) ->
-				                 out.options(o -> o.flushOnEach(false))
-				                    .sendString(in.receive()
+				                 out.sendString(in.receive()
 				                                  .asString()
 				                                  .doOnNext(s -> {
 				                                      if ("4".equals(s)) {
@@ -829,8 +791,7 @@ public class TcpServerTests {
 				         .doOnConnected(c -> c.addHandlerLast("codec",
 				                                              new LineBasedFrameDecoder(256)))
 				         .handle((in, out) ->
-				                 out.options(sendOptions -> sendOptions.flushOnEach(false))
-				                    .sendString(Flux.just("1\n", "2\n", "3\n", "4\n"))
+				                 out.sendString(Flux.just("1\n", "2\n", "3\n", "4\n"))
 				                    .then(in.receive()
 				                            .asString()
 				                            .doOnNext(s -> {
@@ -843,7 +804,87 @@ public class TcpServerTests {
 
 		assertNotNull(client);
 
-		latch.await(30, TimeUnit.SECONDS);
+		assertTrue(latch.await(30, TimeUnit.SECONDS));
+	}
+
+	@Test
+	public void testChannelGroupClosesAllConnections() throws Exception {
+		MonoProcessor<Void> serverConnDisposed = MonoProcessor.create();
+
+		ChannelGroup group = new DefaultChannelGroup(new DefaultEventExecutor());
+
+		CountDownLatch latch = new CountDownLatch(1);
+
+		DisposableServer boundServer =
+				TcpServer.create()
+				         .port(0)
+				         .doOnConnection(c -> {
+				             c.onDispose()
+				              .subscribe(serverConnDisposed);
+				             group.add(c.channel());
+				             latch.countDown();
+				         })
+				         .wiretap(true)
+				         .bindNow();
+
+		TcpClient.create()
+		         .addressSupplier(boundServer::address)
+		         .wiretap(true)
+		         .connect()
+		         .subscribe();
+
+		assertTrue(latch.await(30, TimeUnit.SECONDS));
+
+		boundServer.disposeNow();
+
+		FutureMono.from(group.close())
+		          .block(Duration.ofSeconds(30));
+
+		serverConnDisposed.block(Duration.ofSeconds(5));
+	}
+
+	@Test
+	public void testIssue688() throws Exception {
+		CountDownLatch connected = new CountDownLatch(1);
+		CountDownLatch configured = new CountDownLatch(1);
+		CountDownLatch disconnected = new CountDownLatch(1);
+
+		ChannelGroup group = new DefaultChannelGroup(new DefaultEventExecutor());
+
+		DisposableServer server =
+				TcpServer.create()
+				         .port(0)
+				         .observe((connection, newState) -> {
+				             if (newState == ConnectionObserver.State.CONNECTED) {
+				                 group.add(connection.channel());
+				                 connected.countDown();
+				             }
+				             else if (newState == ConnectionObserver.State.CONFIGURED) {
+				                 configured.countDown();
+				             }
+				             else if (newState == ConnectionObserver.State.DISCONNECTING) {
+				                 disconnected.countDown();
+				             }
+				         })
+				         .wiretap(true)
+				         .bindNow();
+
+		TcpClient.create()
+		         .addressSupplier(server::address)
+		         .wiretap(true)
+		         .connect()
+		         .subscribe();
+
+		assertTrue(connected.await(30, TimeUnit.SECONDS));
+
+		assertTrue(configured.await(30, TimeUnit.SECONDS));
+
+		FutureMono.from(group.close())
+		          .block(Duration.ofSeconds(30));
+
+		assertTrue(disconnected.await(30, TimeUnit.SECONDS));
+
+		server.disposeNow();
 	}
 
 	private static class SimpleClient extends Thread {

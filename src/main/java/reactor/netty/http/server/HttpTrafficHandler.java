@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -56,11 +56,12 @@ final class HttpTrafficHandler extends ChannelDuplexHandler
 
 	static final String MULTIPART_PREFIX = "multipart";
 
-	final ConnectionObserver listener;
-	final boolean            readForwardHeaders;
+	final ConnectionObserver                                 listener;
+	final boolean                                            secure;
+	final boolean                                            readForwardHeaders;
 	final BiPredicate<HttpServerRequest, HttpServerResponse> compress;
-	final ServerCookieEncoder cookieEncoder;
-	final ServerCookieDecoder cookieDecoder;
+	final ServerCookieEncoder                                cookieEncoder;
+	final ServerCookieDecoder                                cookieDecoder;
 
 	boolean persistentConnection = true;
 	// Track pending responses to support client pipelining: https://tools.ietf.org/html/rfc7230#section-6.3.2
@@ -75,11 +76,11 @@ final class HttpTrafficHandler extends ChannelDuplexHandler
 
 	HttpTrafficHandler(ConnectionObserver listener, boolean readForwardHeaders,
 			@Nullable BiPredicate<HttpServerRequest, HttpServerResponse> compress,
-			ServerCookieEncoder encoder,
-			ServerCookieDecoder decoder) {
+			ServerCookieEncoder encoder, ServerCookieDecoder decoder, boolean secure) {
 		this.listener = listener;
 		this.readForwardHeaders = readForwardHeaders;
 		this.compress = compress;
+		this.secure = secure;
 		this.cookieEncoder = encoder;
 		this.cookieDecoder = decoder;
 	}
@@ -103,8 +104,10 @@ final class HttpTrafficHandler extends ChannelDuplexHandler
 			DecoderResult decoderResult = request.decoderResult();
 			if (decoderResult.isFailure()) {
 				Throwable cause = decoderResult.cause();
-				HttpServerOperations.log.debug(format(ctx.channel(), "Decoding failed: " + msg + " : "),
-						cause);
+				if (HttpServerOperations.log.isDebugEnabled()) {
+					HttpServerOperations.log.debug(format(ctx.channel(), "Decoding failed: " + msg + " : "),
+							cause);
+				}
 				ReferenceCountUtil.release(msg);
 
 				HttpResponse response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_0,
@@ -150,10 +153,8 @@ final class HttpTrafficHandler extends ChannelDuplexHandler
 
 				HttpServerOperations ops = new HttpServerOperations(Connection.from(ctx.channel()),
 						listener,
-						compress,
-						request, ConnectionInfo.from(ctx.channel(), readForwardHeaders, request),
-						cookieEncoder, cookieDecoder)
-						.chunkedTransfer(true);
+						compress, request, ConnectionInfo.from(ctx.channel(), readForwardHeaders, request, secure),
+						cookieEncoder, cookieDecoder);
 				ops.bind();
 				listener.onStateChange(ops, ConnectionObserver.State.CONFIGURED);
 
@@ -228,13 +229,13 @@ final class HttpTrafficHandler extends ChannelDuplexHandler
 									"connection, preparing to close"),
 							pendingResponses);
 				}
-				ctx.write(msg, promise)
+				ctx.write(msg, promise.unvoid())
 				   .addListener(this)
 				   .addListener(ChannelFutureListener.CLOSE);
 				return;
 			}
 
-			ctx.write(msg, promise)
+			ctx.write(msg, promise.unvoid())
 			   .addListener(this);
 
 			if (!persistentConnection) {
@@ -284,9 +285,9 @@ final class HttpTrafficHandler extends ChannelDuplexHandler
 				HttpServerOperations ops = new HttpServerOperations(Connection.from(ctx.channel()),
 						listener,
 						compress,
-						nextRequest, ConnectionInfo.from(ctx.channel(), readForwardHeaders, nextRequest),
-						cookieEncoder, cookieDecoder)
-						.chunkedTransfer(true);
+						nextRequest,
+						ConnectionInfo.from(ctx.channel(), readForwardHeaders, nextRequest, secure),
+						cookieEncoder, cookieDecoder);
 				ops.bind();
 				listener.onStateChange(ops, ConnectionObserver.State.CONFIGURED);
 			}
@@ -297,6 +298,19 @@ final class HttpTrafficHandler extends ChannelDuplexHandler
 
 	@Override
 	public void operationComplete(ChannelFuture future) {
+		if (!future.isSuccess()) {
+			if (HttpServerOperations.log.isDebugEnabled()) {
+				HttpServerOperations.log.debug(format(future.channel(),
+				        "Sending last HTTP packet was not successful, terminating the channel"),
+				        future.cause());
+			}
+		}
+		else {
+			if (HttpServerOperations.log.isDebugEnabled()) {
+				HttpServerOperations.log.debug(format(future.channel(),
+				        "Last HTTP packet was sent, terminating the channel"));
+			}
+		}
 		HttpServerOperations.cleanHandlerTerminate(future.channel());
 	}
 

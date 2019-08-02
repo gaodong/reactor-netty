@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -44,7 +44,6 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Ignore;
 import org.junit.Test;
-import org.testng.Assert;
 import reactor.core.publisher.Flux;
 import reactor.core.scheduler.Schedulers;
 import reactor.netty.ChannelBindException;
@@ -55,6 +54,9 @@ import reactor.util.Logger;
 import reactor.util.Loggers;
 
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 /**
  * @author Jon Brisbin
@@ -81,6 +83,7 @@ public class UdpServerTests {
 	@Test
 	@Ignore
 	public void supportsReceivingDatagrams() throws InterruptedException {
+		final Random rndm = new Random();
 		final int port = SocketUtils.findAvailableUdpPort();
 		final CountDownLatch latch = new CountDownLatch(4);
 
@@ -108,7 +111,7 @@ public class UdpServerTests {
 						                                   port));
 
 				                                   byte[] data = new byte[1024];
-				                                   new Random().nextBytes(data);
+				                                   rndm.nextBytes(data);
 				                                   for (int i = 0; i < 4; i++) {
 					                                   udp.write(ByteBuffer.wrap(data));
 				                                   }
@@ -128,8 +131,10 @@ public class UdpServerTests {
 
 	@Test
 	public void supportsUdpMulticast() throws Exception {
+		final Random rndm = new Random();
 		final int port = SocketUtils.findAvailableUdpPort();
-		final CountDownLatch latch = new CountDownLatch(Schedulers.DEFAULT_POOL_SIZE);
+		final CountDownLatch latch1 = new CountDownLatch(Schedulers.DEFAULT_POOL_SIZE);
+		final CountDownLatch latch2 = new CountDownLatch(4);
 		Enumeration<NetworkInterface> ifaces = NetworkInterface.getNetworkInterfaces();
 
 		final InetAddress multicastGroup = InetAddress.getByName("230.0.0.1");
@@ -160,11 +165,12 @@ public class UdpServerTests {
 					                             return Flux.empty();
 				                             })
 				                               .thenMany(in.receive()
-				                                           .asByteArray())
+				                                           .asByteArray()
+				                                           .doOnSubscribe(s -> latch2.countDown()))
 				                               .log()
 				                               .subscribe(bytes -> {
 					                               if (bytes.length == 1024) {
-						                               latch.countDown();
+						                               latch1.countDown();
 					                               }
 				                               });
 				                             return Flux.never();
@@ -175,6 +181,8 @@ public class UdpServerTests {
 			servers.add(server);
 		}
 
+		assertTrue(latch2.await(5, TimeUnit.SECONDS));
+
 		for (int i = 0; i < Schedulers.DEFAULT_POOL_SIZE; i++) {
 			threadPool.submit(() -> {
 				try {
@@ -183,7 +191,7 @@ public class UdpServerTests {
 							multicastInterface);
 
 					byte[] data = new byte[1024];
-					new Random().nextBytes(data);
+					rndm.nextBytes(data);
 
 					multicast.send(new DatagramPacket(data,
 							data.length,
@@ -199,9 +207,8 @@ public class UdpServerTests {
 			          .get(5, TimeUnit.SECONDS);
 		}
 
-		latch.await(5, TimeUnit.SECONDS);
-		assertThat("latch was not counted down enough: " + latch.getCount() + " left on " + (4 ^ 2),
-				latch.getCount() == 0);
+		assertTrue("latch was not counted down enough: " + latch1.getCount() + " left on " + (4 ^ 2),
+				latch1.await(5, TimeUnit.SECONDS));
 
 		for (Connection s : servers) {
 			s.disposeNow();
@@ -257,10 +264,10 @@ public class UdpServerTests {
 			UdpServer.create()
 			         .addressSupplier(conn::address)
 			         .bindNow(Duration.ofSeconds(30));
-			Assert.fail("illegal-success");
+			fail("illegal-success");
 		}
 		catch (ChannelBindException e) {
-			Assert.assertEquals(e.localPort(), conn.address().getPort());
+			assertEquals(e.localPort(), conn.address().getPort());
 			e.printStackTrace();
 		}
 

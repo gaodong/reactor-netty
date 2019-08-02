@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -37,16 +37,19 @@ import static reactor.netty.ReactorNetty.format;
 final class Http2StreamBridgeHandler extends ChannelDuplexHandler {
 
 	final boolean            readForwardHeaders;
+	final boolean            secured;
 	final ConnectionObserver listener;
 	final ServerCookieEncoder cookieEncoder;
 	final ServerCookieDecoder cookieDecoder;
 
 	Http2StreamBridgeHandler(ConnectionObserver listener, boolean readForwardHeaders,
 			ServerCookieEncoder encoder,
-			ServerCookieDecoder decoder) {
+			ServerCookieDecoder decoder,
+			boolean secured) {
 		this.readForwardHeaders = readForwardHeaders;
 		this.listener = listener;
 		this.cookieEncoder = encoder;
+		this.secured = secured;
 		this.cookieDecoder = decoder;
 	}
 
@@ -82,7 +85,8 @@ final class Http2StreamBridgeHandler extends ChannelDuplexHandler {
 					ConnectionInfo.from(ctx.channel()
 					                       .parent(),
 							readForwardHeaders,
-							request),
+							request,
+							secured),
 					cookieEncoder, cookieDecoder);
 			ops.bind();
 			listener.onStateChange(ops, ConnectionObserver.State.CONFIGURED);

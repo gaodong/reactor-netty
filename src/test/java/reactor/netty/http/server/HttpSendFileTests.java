@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -32,11 +32,13 @@ import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiFunction;
 import java.util.function.BiPredicate;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.logging.Level;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
@@ -47,6 +49,7 @@ import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.FluxSink;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.SignalType;
 import reactor.netty.DisposableServer;
 import reactor.netty.NettyOutbound;
 import reactor.netty.http.client.HttpClient;
@@ -289,8 +292,8 @@ public class HttpSendFileTests {
 	public void sendFileAsync4096Negative() throws IOException, URISyntaxException {
 		doTestSendFileAsync((req, resp) -> req.receive()
 				                              .take(10)
-				                              .doOnNext(b -> resp.status(500)
-				                                                 .header(HttpHeaderNames.CONNECTION, "close"))
+				                              .doOnComplete(() -> resp.withConnection(c -> c.channel()
+				                                                                            .close()))
 				                              .then(),
 				4096, "error".getBytes(Charset.defaultCharset()));
 	}
@@ -298,15 +301,17 @@ public class HttpSendFileTests {
 	@Test
 	public void sendFileAsync1024() throws IOException, URISyntaxException {
 		doTestSendFileAsync((req, resp) -> resp.sendByteArray(req.receive()
-				                                                 .aggregate()
-				                                                 .asByteArray()),
+		                                                         .asByteArray()
+		                                                         .log("reply", Level.INFO, SignalType.REQUEST)),
 				1024, null);
 	}
 
 	private void doTestSendFileAsync(BiFunction<? super HttpServerRequest, ? super
 			HttpServerResponse, ? extends Publisher<Void>> fn, int chunk, byte[] expectedContent) throws IOException, URISyntaxException {
 		Path largeFile = Paths.get(getClass().getResource("/largeFile.txt").toURI());
-		Path tempFile = Files.createTempFile(largeFile.getParent(),"temp", ".txt");
+		Path largeFileParent = largeFile.getParent();
+		assertThat(largeFileParent).isNotNull();
+		Path tempFile = Files.createTempFile(largeFileParent,"temp", ".txt");
 		tempFile.toFile().deleteOnExit();
 
 		byte[] fileBytes = Files.readAllBytes(largeFile);
@@ -319,31 +324,37 @@ public class HttpSendFileTests {
 		Flux<ByteBuf> content =
 				Flux.using(
 				        () -> AsynchronousFileChannel.open(tempFile, StandardOpenOption.READ),
-				        ch -> Flux.create(fluxSink -> {
+				        ch -> Flux.<ByteBuf>create(fluxSink -> {
+				                TestCompletionHandler handler = new TestCompletionHandler(ch, fluxSink, allocator, chunk);
+				                fluxSink.onDispose(handler::dispose);
 				                ByteBuffer buf = ByteBuffer.allocate(chunk);
-				                ch.read(buf, 0, buf, new TestCompletionHandler(ch, fluxSink, allocator, chunk));
+				                ch.read(buf, 0, buf, handler);
 				        }),
-				        this::closeChannel);
+				        HttpSendFileTests::closeChannel)
+				    .doOnDiscard(ByteBuf.class, ByteBuf::release)
+				.log("send", Level.INFO, SignalType.REQUEST, SignalType.ON_COMPLETE);
 
 		DisposableServer context =
 				customizeServerOptions(HttpServer.create()
 				                                 .host("localhost"))
+//						.wiretap(true)
+//						.tcpConfiguration(tcp -> tcp.option(ChannelOption.RCVBUF_ALLOCATOR, new FixedRecvByteBufAllocator(1024)))
 				          .handle(fn)
 				          .bindNow();
 
 		try {
-			AtomicLong counter = new AtomicLong(0);
 			byte[] response =
 					customizeClientOptions(HttpClient.create()
 					                                 .addressSupplier(context::address))
+//							.tcpConfiguration(tcp -> tcp.option(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(1024, 1024)))
+//.wiretap(true)
 					    .request(HttpMethod.POST)
 					    .uri("/")
 					    .send(content)
 					    .responseContent()
 					    .aggregate()
 					    .asByteArray()
-					    .onErrorReturn(IOException.class,
-					        "error".getBytes(Charset.defaultCharset()))
+					    .onErrorReturn(IOException.class, expectedContent)
 					    .block();
 
 			assertThat(response).isEqualTo(expectedContent == null ? Files.readAllBytes(tempFile) : expectedContent);
@@ -353,7 +364,7 @@ public class HttpSendFileTests {
 		}
 	}
 
-	private void closeChannel(Channel channel) {
+	private static void closeChannel(Channel channel) {
 		if (channel != null && channel.isOpen()) {
 			try {
 				channel.close();
@@ -375,6 +386,8 @@ public class HttpSendFileTests {
 
 		private AtomicLong position;
 
+		private final AtomicBoolean disposed = new AtomicBoolean();
+
 		TestCompletionHandler(AsynchronousFileChannel channel, FluxSink<ByteBuf> sink,
 							  ByteBufAllocator allocator, int chunk) {
 			this.channel = channel;
@@ -386,35 +399,36 @@ public class HttpSendFileTests {
 
 		@Override
 		public void completed(Integer read, ByteBuffer dataBuffer) {
-			if (read != -1) {
+			if (read != -1 && !disposed.get()) {
 				long pos = this.position.addAndGet(read);
 				dataBuffer.flip();
 				ByteBuf buf = allocator.buffer().writeBytes(dataBuffer);
 				this.sink.next(buf);
 
-				if (!this.sink.isCancelled()) {
+				if (disposed.get()) {
+					buf.release();
+					this.sink.complete();
+					closeChannel(channel);
+				}
+				else {
 					ByteBuffer newByteBuffer = ByteBuffer.allocate(chunk);
 					this.channel.read(newByteBuffer, pos, newByteBuffer, this);
 				}
 			}
 			else {
-				try {
-					channel.close();
-				}
-				catch (IOException ignored) {
-				}
 				this.sink.complete();
+				closeChannel(channel);
 			}
 		}
 
 		@Override
 		public void failed(Throwable exc, ByteBuffer dataBuffer) {
-			try {
-				channel.close();
-			}
-			catch (IOException ignored) {
-			}
 			this.sink.error(exc);
+			closeChannel(channel);
+		}
+
+		public void dispose() {
+			this.disposed.set(true);
 		}
 	}
 }

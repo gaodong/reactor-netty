@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -25,7 +25,7 @@ import java.nio.charset.Charset;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
-import java.util.Objects;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -56,20 +56,27 @@ import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpServerCodec;
 import io.netty.handler.codec.http.HttpVersion;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
+import io.netty.handler.ssl.util.SelfSignedCertificate;
 import io.netty.util.ReferenceCountUtil;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.reactivestreams.Publisher;
-import org.testng.Assert;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.netty.ByteBufFlux;
 import reactor.netty.ChannelBindException;
 import reactor.netty.Connection;
+import reactor.netty.DisposableChannel;
 import reactor.netty.DisposableServer;
 import reactor.netty.FutureMono;
 import reactor.netty.NettyOutbound;
+import reactor.netty.channel.AbortedException;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.http.client.HttpClientRequest;
+import reactor.netty.http.client.PrematureCloseException;
 import reactor.netty.resources.ConnectionProvider;
 import reactor.netty.tcp.TcpClient;
 import reactor.test.StepVerifier;
@@ -77,8 +84,7 @@ import reactor.util.context.Context;
 import reactor.util.function.Tuple2;
 import reactor.util.function.Tuple3;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.Assertions.*;
 
 /**
  * @author Stephane Maldini
@@ -161,7 +167,7 @@ public class HttpServerTests {
 		                                 .wiretap(true)
 		                                 .bindNow();
 
-		int code = client.wiretap(true)
+		Integer code = client.wiretap(true)
 		                 .get()
 		                 .uri("/")
 		                 .response()
@@ -198,7 +204,7 @@ public class HttpServerTests {
 		                               .wiretap(true)
 		                               .bindNow();
 
-		int code =
+		Integer code =
 				HttpClient.create()
 				          .port(c.address().getPort())
 				          .wiretap(true)
@@ -261,7 +267,7 @@ public class HttpServerTests {
 				         .wiretap(true)
 				         .connectNow();
 
-		Assert.assertTrue(latch.await(45, TimeUnit.SECONDS));
+		assertThat(latch.await(45, TimeUnit.SECONDS)).isTrue();
 
 		server.disposeNow();
 		client.disposeNow();
@@ -270,12 +276,16 @@ public class HttpServerTests {
 	@Test
 	public void flushOnComplete() {
 
-		Flux<String> test = Flux.range(0, 100)
+		Flux<String> flux = Flux.range(0, 100)
 		                        .map(n -> String.format("%010d", n));
+		List<String> test =
+				flux.collectList()
+				    .block();
+		assertThat(test).isNotNull();
 
 		DisposableServer c = HttpServer.create()
 		                               .port(0)
-		                               .handle((req, resp) -> resp.sendString(test.map(s -> s + "\n")))
+		                               .handle((req, resp) -> resp.sendString(flux.map(s -> s + "\n")))
 		                               .wiretap(true)
 		                               .bindNow();
 
@@ -290,9 +300,7 @@ public class HttpServerTests {
 		                                .asString();
 
 		StepVerifier.create(client)
-		            .expectNextSequence(
-		                    Objects.requireNonNull(test.collectList()
-		                                               .block()))
+		            .expectNextSequence(test)
 		            .expectComplete()
 		            .verify(Duration.ofSeconds(30));
 
@@ -364,11 +372,11 @@ public class HttpServerTests {
 		                                                                  .delayUntil(ch -> c.inbound().receive()))
 		                              .blockLast(Duration.ofSeconds(30));
 
-		Assert.assertEquals(response0, response1);
-		Assert.assertEquals(response0, response2);
-		Assert.assertEquals(response0, response3);
-		Assert.assertEquals(response0, response4);
-		Assert.assertEquals(response0, response5);
+		assertThat(response0).isEqualTo(response1);
+		assertThat(response0).isEqualTo(response2);
+		assertThat(response0).isEqualTo(response3);
+		assertThat(response0).isEqualTo(response4);
+		assertThat(response0).isEqualTo(response5);
 
 		p.dispose();
 		s.disposeNow();
@@ -378,7 +386,7 @@ public class HttpServerTests {
 	public void gettingOptionsDuplicates() {
 		HttpServer server = HttpServer.create()
 		                              .port(123)
-		                              .host(("foo"))
+		                              .host(("example.com"))
 		                              .compress(true);
 		assertThat(server.tcpConfiguration().configure())
 		          .isNotSameAs(HttpServer.DEFAULT_TCP_SERVER)
@@ -396,7 +404,7 @@ public class HttpServerTests {
 		                                    .bindNow();
 
 		try {
-			int code =
+			Integer code =
 					HttpClient.create()
 					          .port(facade.address().getPort())
 					          .wiretap(true)
@@ -518,10 +526,10 @@ public class HttpServerTests {
 				HttpServer.create()
 				          .host("localhost")
 				          .route(r -> r.route(req -> req.uri().startsWith("/1"),
-				                                  (req, res) -> res.sendString(Mono.just("OK")))
+				                                  (req, res) -> res.sendString(Flux.just("OK").hide()))
 				                       .route(req -> req.uri().startsWith("/2"),
 				                                  (req, res) -> res.chunkedTransfer(false)
-				                                                   .sendString(Mono.just("OK")))
+				                                                   .sendString(Flux.just("OK").hide()))
 				                       .route(req -> req.uri().startsWith("/3"),
 				                                  (req, res) -> {
 				                                                res.responseHeaders().set("Content-Length", 2);
@@ -808,10 +816,10 @@ public class HttpServerTests {
 					HttpServer.create()
 					          .port(d.port())
 					          .bindNow();
-					Assert.fail("illegal-success");
+					fail("illegal-success");
 				}
 				catch (ChannelBindException e){
-					Assert.assertEquals(e.localPort(), d.port());
+					assertThat(e.localPort()).isEqualTo(d.port());
 					e.printStackTrace();
 				}
 				d.disposeNow();
@@ -899,28 +907,34 @@ public class HttpServerTests {
 			return field.get(obj);
 		}
 		catch(NoSuchFieldException | IllegalAccessException e) {
-			return null;
+			return new RuntimeException(e);
 		}
 	}
 
 	@Test
-	public void testDropPublisherConnectionClose() {
+	@Ignore //TODO fix monoSendMany to not invoke Flux.defer()
+	public void testDropPublisherConnectionClose() throws Exception {
 		ByteBuf data = ByteBufAllocator.DEFAULT.buffer();
 		data.writeCharSequence("test", Charset.defaultCharset());
+		CountDownLatch latch = new CountDownLatch(1);
 		doTestDropData(
 				(req, res) -> res.header("Content-Length", "0")
-				                 .send(Mono.fromRunnable(() -> Flux.just(data, data.retain(), data.retain())))
+				                 .send(Flux.defer(() -> Flux.just(data, data.retain(), data.retain())))
 				                 .then()
-				                 .doOnCancel(() -> ReferenceCountUtil.release(data)),
+				                 .doOnCancel(() -> {
+				                     ReferenceCountUtil.release(data);
+				                     latch.countDown();
+				                 }),
 				(req, out) -> {
 					req.addHeader("Connection", "close");
 					return out;
 				});
+		assertThat(latch.await(30, TimeUnit.SECONDS)).isTrue();
 		assertThat(ReferenceCountUtil.refCnt(data)).isEqualTo(0);
 	}
 
 	@Test
-	public void testDropMessageConnectionClose() {
+	public void testDropMessageConnectionClose() throws Exception {
 		ByteBuf data = ByteBufAllocator.DEFAULT.buffer();
 		data.writeCharSequence("test", Charset.defaultCharset());
 		doTestDropData(
@@ -934,20 +948,26 @@ public class HttpServerTests {
 	}
 
 	@Test
-	public void testDropPublisher() {
+	@Ignore //TODO fix monoSendMany to not invoke Flux.defer()
+	public void testDropPublisher() throws Exception {
 		ByteBuf data = ByteBufAllocator.DEFAULT.buffer();
 		data.writeCharSequence("test", Charset.defaultCharset());
+		CountDownLatch latch = new CountDownLatch(1);
 		doTestDropData(
 				(req, res) -> res.header("Content-Length", "0")
-				                 .send(Mono.fromRunnable(() -> Flux.just(data, data.retain(), data.retain())))
+				                 .send(Flux.defer(() -> Flux.just(data, data.retain(), data.retain())))
 				                 .then()
-				                 .doOnCancel(() -> ReferenceCountUtil.release(data)),
+				                 .doOnCancel(() -> {
+				                     ReferenceCountUtil.release(data);
+				                     latch.countDown();
+				                 }),
 				(req, out) -> out);
+		assertThat(latch.await(30, TimeUnit.SECONDS)).isTrue();
 		assertThat(ReferenceCountUtil.refCnt(data)).isEqualTo(0);
 	}
 
 	@Test
-	public void testDropMessage() {
+	public void testDropMessage() throws Exception {
 		ByteBuf data = ByteBufAllocator.DEFAULT.buffer();
 		data.writeCharSequence("test", Charset.defaultCharset());
 		doTestDropData(
@@ -960,7 +980,8 @@ public class HttpServerTests {
 	private void doTestDropData(
 			BiFunction<? super HttpServerRequest, ? super
 					HttpServerResponse, ? extends Publisher<Void>> serverFn,
-			BiFunction<? super HttpClientRequest, ? super NettyOutbound, ? extends Publisher<Void>> clientFn) {
+			BiFunction<? super HttpClientRequest, ? super NettyOutbound, ? extends Publisher<Void>> clientFn)
+			throws Exception {
 		DisposableServer disposableServer =
 				HttpServer.create()
 				          .port(0)
@@ -968,10 +989,13 @@ public class HttpServerTests {
 				          .wiretap(true)
 				          .bindNow(Duration.ofSeconds(30));
 
+		CountDownLatch latch = new CountDownLatch(1);
 		String response =
 				HttpClient.create()
 				          .port(disposableServer.port())
 				          .wiretap(true)
+				          .doOnRequest((req, conn) -> conn.onTerminate()
+				                                          .subscribe(null, null, latch::countDown))
 				          .request(HttpMethod.GET)
 				          .uri("/")
 				          .send(clientFn)
@@ -981,6 +1005,7 @@ public class HttpServerTests {
 				          .switchIfEmpty(Mono.just("Empty"))
 				          .block(Duration.ofSeconds(30));
 
+		assertThat(latch.await(30, TimeUnit.SECONDS)).isTrue();
 		assertThat(response).isEqualTo("Empty");
 		disposableServer.disposeNow();
 	}
@@ -1061,5 +1086,71 @@ public class HttpServerTests {
 		            .verify(Duration.ofSeconds(30));
 
 		disposableServer.disposeNow();
+	}
+
+	@Test
+	public void testIssue630() {
+		DisposableServer server =
+				HttpServer.create()
+				          .port(0)
+				          .handle((req, res) ->
+				              res.sendString(Mono.delay(Duration.ofSeconds(3))
+				                                 .thenReturn("OK")))
+				          .bindNow();
+
+		Flux.range(0, 70)
+		    .flatMap(i ->
+		        HttpClient.create()
+		                  .addressSupplier(server::address)
+		                  .post()
+		                  .uri("/")
+		                  .send(ByteBufFlux.fromString(Mono.just("test")))
+		                  .responseConnection((res, conn) -> {
+		                      int status = res.status().code();
+		                      conn.dispose();
+		                      return Mono.just(status);
+		                  }))
+		    .blockLast(Duration.ofSeconds(30));
+
+		server.dispose();
+	}
+
+	@Test
+	public void testExpectErrorWhenConnectionClosed() throws Exception {
+		SelfSignedCertificate ssc = new SelfSignedCertificate();
+		SslContext serverCtx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey())
+		                                        .build();
+		AtomicReference<Throwable> error = new AtomicReference<>();
+		CountDownLatch latch = new CountDownLatch(1);
+		DisposableServer server =
+				HttpServer.create()
+				          .port(0)
+				          .secure(spec -> spec.sslContext(serverCtx))
+				          .handle((req, res) -> {
+				              res.withConnection(DisposableChannel::dispose);
+				              return res.sendString(Flux.just("OK").hide())
+				                        .then()
+				                        .doOnError(t -> {
+				                            error.set(t);
+				                            latch.countDown();
+				                        });
+				          })
+				          .bindNow();
+
+		SslContext clientCtx = SslContextBuilder.forClient()
+		                                        .trustManager(InsecureTrustManagerFactory.INSTANCE)
+		                                        .build();
+		StepVerifier.create(
+				HttpClient.create()
+				          .addressSupplier(server::address)
+				          .secure(spec -> spec.sslContext(clientCtx))
+				          .get()
+				          .uri("/")
+				          .responseContent())
+				    .verifyError(PrematureCloseException.class);
+
+		assertThat(latch.await(30, TimeUnit.SECONDS)).isTrue();
+		assertThat(error.get()).isInstanceOf(AbortedException.class);
+		server.dispose();
 	}
 }

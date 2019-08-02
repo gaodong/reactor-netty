@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -47,10 +47,7 @@ public interface WebsocketOutbound extends NettyOutbound {
 	String selectedSubprotocol();
 
 	@Override
-	default NettyOutbound send(Publisher<? extends ByteBuf> dataStream) {
-		return sendObject(Flux.from(dataStream)
-		                      .map(bytebufToWebsocketFrame));
-	}
+	NettyOutbound send(Publisher<? extends ByteBuf> dataStream);
 
 	/**
 	 * Prepare to send a close frame on subscribe then close the underlying channel
@@ -75,7 +72,7 @@ public interface WebsocketOutbound extends NettyOutbound {
 	 * Prepare to send a close frame on subscribe then close the underlying channel
 	 *
 	 * @param statusCode
-	 *            Integer status code as per <a href="http://tools.ietf.org/html/rfc6455#section-7.4">RFC 6455</a>. For
+	 *            Integer status code as per <a href="https://tools.ietf.org/html/rfc6455#section-7.4">RFC 6455</a>. For
 	 *            example, <tt>1000</tt> indicates normal closure.
 	 * @param reasonText
 	 *            Reason text. Set to null if no text.
@@ -91,7 +88,7 @@ public interface WebsocketOutbound extends NettyOutbound {
 	 * @param rsv
 	 *            reserved bits used for protocol extensions
 	 * @param statusCode
-	 *            Integer status code as per <a href="http://tools.ietf.org/html/rfc6455#section-7.4">RFC 6455</a>. For
+	 *            Integer status code as per <a href="https://tools.ietf.org/html/rfc6455#section-7.4">RFC 6455</a>. For
 	 *            example, <tt>1000</tt> indicates normal closure.
 	 * @param reasonText
 	 *            Reason text. Set to null if no text.

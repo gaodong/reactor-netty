@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,17 +19,14 @@ package reactor.netty.http.client;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.util.Objects;
-import java.util.concurrent.Callable;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 import java.util.function.BiPredicate;
-import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import javax.annotation.Nullable;
 
 import io.netty.bootstrap.Bootstrap;
-import io.netty.buffer.ByteBufAllocator;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
@@ -65,6 +62,7 @@ import io.netty.handler.ssl.ApplicationProtocolNegotiationHandler;
 import io.netty.handler.ssl.JdkSslContext;
 import io.netty.handler.ssl.SslContext;
 import io.netty.util.AsciiString;
+import io.netty.util.AttributeKey;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
 import org.reactivestreams.Publisher;
@@ -77,10 +75,8 @@ import reactor.core.publisher.MonoSink;
 import reactor.core.publisher.Operators;
 import reactor.netty.Connection;
 import reactor.netty.ConnectionObserver;
-import reactor.netty.FutureMono;
 import reactor.netty.NettyOutbound;
 import reactor.netty.NettyPipeline;
-import reactor.netty.ReactorNetty;
 import reactor.netty.channel.AbortedException;
 import reactor.netty.channel.BootstrapHandlers;
 import reactor.netty.channel.ChannelOperations;
@@ -90,6 +86,7 @@ import reactor.netty.tcp.InetSocketAddressUtil;
 import reactor.netty.tcp.ProxyProvider;
 import reactor.netty.tcp.SslProvider;
 import reactor.netty.tcp.TcpClient;
+import reactor.netty.tcp.TcpMetricsHandler;
 import reactor.util.Logger;
 import reactor.util.Loggers;
 import reactor.util.context.Context;
@@ -134,20 +131,26 @@ final class HttpClientConnect extends HttpClient {
 
 				LoopResources loops = HttpResources.get();
 
-				SslContext sslContext = ssl != null ? ssl.getSslContext() : null;
+				EventLoopGroup elg = loops.onClient(LoopResources.DEFAULT_NATIVE);
 
-				boolean useNative =
-						LoopResources.DEFAULT_NATIVE && !(sslContext instanceof JdkSslContext);
+				Integer maxConnections = (Integer) b.config().attrs().get(AttributeKey.valueOf("maxConnections"));
 
-				EventLoopGroup elg = loops.onClient(useNative);
-
-				b.group(elg)
-				 .channel(loops.onChannel(elg));
+				if (maxConnections != null && maxConnections != -1 && elg instanceof Supplier) {
+					EventLoopGroup delegate = (EventLoopGroup) ((Supplier) elg).get();
+					b.group(delegate)
+					 .channel(loops.onChannel(delegate));
+				}
+				else {
+					b.group(elg)
+					 .channel(loops.onChannel(elg));
+				}
 			}
 
 			HttpClientConfiguration conf = HttpClientConfiguration.getAndClean(b);
+			ClientCookieEncoder cookieEncoder = conf.cookieEncoder;
+			ClientCookieDecoder cookieDecoder = conf.cookieDecoder;
 			BootstrapHandlers.channelOperationFactory(b,
-					(ch, c, msg) -> new HttpClientOperations(ch, c, conf.cookieEncoder, conf.cookieDecoder));
+					(ch, c, msg) -> new HttpClientOperations(ch, c, cookieEncoder, cookieDecoder));
 
 			if (ssl != null) {
 				if (ssl.getDefaultConfigurationType() == null) {
@@ -232,7 +235,7 @@ final class HttpClientConnect extends HttpClient {
 				}
 				if ((configuration.protocols & HttpClientConfiguration.h11) == HttpClientConfiguration.h11) {
 					BootstrapHandlers.updateConfiguration(b, NettyPipeline.HttpInitializer,
-							new Http1Initializer(handler, configuration.protocols));
+							new Http1Initializer(handler.decoder, handler.compress, configuration.protocols));
 //					return;
 				}
 //				if ((configuration.protocols & HttpClientConfiguration.h2) == HttpClientConfiguration.h2) {
@@ -268,7 +271,7 @@ final class HttpClientConnect extends HttpClient {
 				if ((configuration.protocols & HttpClientConfiguration.h11) == HttpClientConfiguration.h11) {
 					BootstrapHandlers.updateConfiguration(b,
 							NettyPipeline.HttpInitializer,
-							new Http1Initializer(handler, configuration.protocols));
+							new Http1Initializer(handler.decoder, handler.compress, configuration.protocols));
 //					return;
 				}
 //				if ((configuration.protocols & HttpClientConfiguration.h2c) == HttpClientConfiguration.h2c) {
@@ -316,7 +319,9 @@ final class HttpClientConnect extends HttpClient {
 				}
 
 				BootstrapHandlers.connectionObserver(finalBootstrap,
-						new HttpObserver(sink, handler).then(BootstrapHandlers.connectionObserver(finalBootstrap)));
+						new HttpObserver(sink, handler)
+						        .then(BootstrapHandlers.connectionObserver(finalBootstrap))
+						        .then(new HttpIOHandlerObserver(sink, handler)));
 
 				tcpClient.connect(finalBootstrap)
 				         .subscribe(new TcpClientSubscriber(sink));
@@ -377,36 +382,59 @@ final class HttpClientConnect extends HttpClient {
 
 		@Override
 		public void onUncaughtException(Connection connection, Throwable error) {
-			if (error instanceof RedirectClientException && log.isDebugEnabled()) {
-				log.debug(format(connection.channel(), "The request will be redirected"));
+			if (error instanceof RedirectClientException) {
+				if (log.isDebugEnabled()) {
+					log.debug(format(connection.channel(), "The request will be redirected"));
+				}
 			}
-			else if (AbortedException.isConnectionReset(error) && log.isDebugEnabled()) {
-				log.debug(format(connection.channel(), "The connection observed an error, " +
-						"the request will be retried"), error);
+			else if (AbortedException.isConnectionReset(error)) {
+				if (log.isDebugEnabled()) {
+					log.debug(format(connection.channel(), "The connection observed an error, " +
+							"the request will be retried"), error);
+				}
 			}
-			else {
+			else if (log.isWarnEnabled()) {
 				log.warn(format(connection.channel(), "The connection observed an error"), error);
 			}
 			sink.error(error);
 		}
 
 		@Override
-		@SuppressWarnings("unchecked")
 		public void onStateChange(Connection connection, State newState) {
 			if (newState == HttpClientState.RESPONSE_RECEIVED) {
 				sink.success(connection);
 				return;
 			}
 			if (newState == State.CONFIGURED && HttpClientOperations.class == connection.getClass()) {
+				handler.channel((HttpClientOperations) connection);
+			}
+		}
+	}
+
+	final static class HttpIOHandlerObserver implements ConnectionObserver {
+
+		final MonoSink<Connection> sink;
+		final HttpClientHandler handler;
+
+		HttpIOHandlerObserver(MonoSink<Connection> sink, HttpClientHandler handler) {
+			this.sink = sink;
+			this.handler = handler;
+		}
+
+		@Override
+		public Context currentContext() {
+			return sink.currentContext();
+		}
+
+		@Override
+		public void onStateChange(Connection connection, State newState) {
+			if (newState == ConnectionObserver.State.CONFIGURED
+					&& HttpClientOperations.class == connection.getClass()) {
 				if (log.isDebugEnabled()) {
 					log.debug(format(connection.channel(), "Handler is being applied: {}"),
 							handler);
 				}
-				handler.channel(connection.channel());
 
-//				Mono.fromDirect(initializer.upgraded)
-//				    .then(Mono.defer(() -> Mono.fromDirect(handler.requestWithBody((HttpClientOperations)connection))))
-//				    .subscribe(connection.disposeSubscriber());
 				Mono.defer(() -> Mono.fromDirect(handler.requestWithBody((HttpClientOperations)connection)))
 				    .subscribe(connection.disposeSubscriber());
 			}
@@ -421,7 +449,6 @@ final class HttpClientConnect extends HttpClient {
 		final BiFunction<? super HttpClientRequest, ? super NettyOutbound, ? extends Publisher<Void>>
 		                         handler;
 		final boolean            compress;
-		final Boolean            chunkedTransfer;
 		final UriEndpointFactory uriEndpointFactory;
 		final String             websocketProtocols;
 		final int                maxFramePayloadLength;
@@ -430,6 +457,8 @@ final class HttpClientConnect extends HttpClient {
 		final ClientCookieDecoder cookieDecoder;
 
 		final BiPredicate<HttpClientRequest, HttpClientResponse> followRedirectPredicate;
+
+		final HttpResponseDecoderSpec decoder;
 
 		final ProxyProvider proxyProvider;
 
@@ -443,9 +472,9 @@ final class HttpClientConnect extends HttpClient {
 			this.method = configuration.method;
 			this.compress = configuration.acceptGzip;
 			this.followRedirectPredicate = configuration.followRedirectPredicate;
-			this.chunkedTransfer = configuration.chunkedTransfer;
 			this.cookieEncoder = configuration.cookieEncoder;
 			this.cookieDecoder = configuration.cookieDecoder;
+			this.decoder = configuration.decoder;
 			this.proxyProvider = proxyProvider;
 
 			HttpHeaders defaultHeaders = configuration.headers;
@@ -533,23 +562,17 @@ final class HttpClientConnect extends HttpClient {
 
 				ch.followRedirectPredicate(followRedirectPredicate);
 
-				if (chunkedTransfer == null) {
-					if (Objects.equals(method, HttpMethod.GET) ||
-							Objects.equals(method, HttpMethod.HEAD) ||
-							Objects.equals(method, HttpMethod.DELETE)) {
-						ch.chunkedTransfer(false);
-					} else if (!headers.contains(HttpHeaderNames.CONTENT_LENGTH)) {
-						ch.chunkedTransfer(true);
-					}
-				}
-				else {
-					ch.chunkedTransfer(chunkedTransfer);
+				if (!Objects.equals(method, HttpMethod.GET) &&
+						!Objects.equals(method, HttpMethod.HEAD) &&
+						!Objects.equals(method, HttpMethod.DELETE) &&
+						!headers.contains(HttpHeaderNames.CONTENT_LENGTH)) {
+					ch.chunkedTransfer(true);
 				}
 
 				if (handler != null) {
 					if (websocketProtocols != null) {
-						WebsocketUpgradeOutbound wuo = new WebsocketUpgradeOutbound(ch, websocketProtocols, maxFramePayloadLength, compress);
-						return Flux.concat(handler.apply(ch, wuo), wuo.then());
+						return Mono.fromRunnable(() -> ch.withWebsocketSupport(websocketProtocols, maxFramePayloadLength, compress))
+						           .thenEmpty(Mono.fromRunnable(() -> Flux.concat(handler.apply(ch, ch))));
 					}
 					else {
 						return handler.apply(ch, ch);
@@ -616,11 +639,10 @@ final class HttpClientConnect extends HttpClient {
 			}
 		}
 
-		void channel(Channel channel) {
+		void channel(HttpClientOperations ops) {
 			Supplier<String>[] redirectedFrom = this.redirectedFrom;
 			if (redirectedFrom != null) {
-				channel.attr(HttpClientOperations.REDIRECT_ATTR_KEY)
-				       .set(redirectedFrom);
+				ops.redirectedFrom = redirectedFrom;
 			}
 		}
 
@@ -645,85 +667,45 @@ final class HttpClientConnect extends HttpClient {
 		}
 	}
 
-	static final class WebsocketUpgradeOutbound implements NettyOutbound {
-
-		final HttpClientOperations ch;
-		final Mono<Void>           m;
-		final String               websocketProtocols;
-
-		WebsocketUpgradeOutbound(HttpClientOperations ch, String websocketProtocols, int websocketMaxFramePayloadLength,
-				boolean compress) {
-			this.ch = ch;
-			this.websocketProtocols = websocketProtocols;
-			this.m = Mono.fromRunnable(() -> ch.withWebsocketSupport(websocketProtocols, websocketMaxFramePayloadLength, compress));
-		}
-
-		@Override
-		public ByteBufAllocator alloc() {
-			return ch.alloc();
-		}
-
-		@Override
-		public NettyOutbound sendObject(Publisher<?> dataStream) {
-			return then(FutureMono.deferFuture(() -> ch.channel()
-			                                           .writeAndFlush(dataStream)));
-		}
-
-		@Override
-		public NettyOutbound sendObject(Object message) {
-			ch.onTerminate().subscribe(null, null, () -> ReactorNetty.safeRelease(message));
-			return then(FutureMono.deferFuture(() -> ch.channel()
-			                                           .writeAndFlush(message)));
-		}
-
-		@Override
-		public <S> NettyOutbound sendUsing(Callable<? extends S> sourceInput,
-				BiFunction<? super Connection, ? super S, ?> mappedInput,
-				Consumer<? super S> sourceCleanup) {
-			Objects.requireNonNull(sourceInput, "sourceInput");
-			Objects.requireNonNull(mappedInput, "mappedInput");
-			Objects.requireNonNull(sourceCleanup, "sourceCleanup");
-
-			return then(Mono.using(
-					sourceInput,
-					s -> FutureMono.from(ch.channel()
-					                       .writeAndFlush(mappedInput.apply(ch, s))),
-					sourceCleanup)
-			);
-		}
-
-		@Override
-		public NettyOutbound withConnection(Consumer<? super Connection> withConnection) {
-			return ch.withConnection(withConnection);
-		}
-
-		@Override
-		public Mono<Void> then() {
-			return m;
-		}
-	}
 
 	static final class Http1Initializer
 			implements BiConsumer<ConnectionObserver, Channel>  {
 
-		final HttpClientHandler handler;
+		final HttpResponseDecoderSpec decoder;
+		final boolean compress;
 		final int protocols;
 
-		Http1Initializer(HttpClientHandler handler, int protocols) {
-			this.handler = handler;
+		Http1Initializer(HttpResponseDecoderSpec decoder, boolean compress, int protocols) {
+			this.decoder = decoder;
+			this.compress = compress;
 			this.protocols = protocols;
 		}
 
 		@Override
 		public void accept(ConnectionObserver listener, Channel channel) {
-			channel.pipeline()
-			       .addLast(NettyPipeline.HttpCodec, new HttpClientCodec());
+			ChannelPipeline p = channel.pipeline();
+			p.addLast(NettyPipeline.HttpCodec,
+			          new HttpClientCodec(decoder.maxInitialLineLength(),
+			                              decoder.maxHeaderSize(),
+			                              decoder.maxChunkSize(),
+			                              decoder.failOnMissingResponse,
+			                              decoder.validateHeaders(),
+			                              decoder.initialBufferSize(),
+			                              decoder.parseHttpAfterConnectRequest));
 
-			if (handler.compress) {
-				channel.pipeline()
-				       .addAfter(NettyPipeline.HttpCodec,
-						       NettyPipeline.HttpDecompressor,
-						       new HttpContentDecompressor());
+			if (compress) {
+				p.addAfter(NettyPipeline.HttpCodec,
+				           NettyPipeline.HttpDecompressor,
+				           new HttpContentDecompressor());
+			}
+
+			ChannelHandler handler = p.get(NettyPipeline.TcpMetricsHandler);
+			if (handler != null) {
+				TcpMetricsHandler tcpMetrics = (TcpMetricsHandler) handler;
+				HttpClientMetricsHandler httpMetrics =
+						new HttpClientMetricsHandler(tcpMetrics.registry(),
+						                             tcpMetrics.name());
+				p.addLast(NettyPipeline.HttpMetricsHandler, httpMetrics);
 			}
 		}
 
@@ -736,13 +718,13 @@ final class HttpClientConnect extends HttpClient {
 				return false;
 			}
 			Http1Initializer that = (Http1Initializer) o;
-			return handler.compress == that.handler.compress &&
+			return compress == that.compress &&
 					protocols == that.protocols;
 		}
 
 		@Override
 		public int hashCode() {
-			return Objects.hash(handler.compress, protocols);
+			return Objects.hash(compress, protocols);
 		}
 	}
 
@@ -794,7 +776,7 @@ final class HttpClientConnect extends HttpClient {
 
 		@Override
 		public void channelActive(ChannelHandlerContext ctx) {
-			ChannelOperations<?, ?> ops = Connection.from(ctx.channel()).as(ChannelOperations.class);
+			ChannelOperations<?, ?> ops = ChannelOperations.get(ctx.channel());
 			if (ops != null) {
 				ops.listener().onStateChange(ops, ConnectionObserver.State.CONFIGURED);
 			}
@@ -838,7 +820,14 @@ final class HttpClientConnect extends HttpClient {
 				p.addLast(new Http2ClientInitializer(listener, this));
 			}
 			else {
-				HttpClientCodec httpClientCodec = new HttpClientCodec();
+				HttpClientCodec httpClientCodec =
+						new HttpClientCodec(handler.decoder.maxInitialLineLength(),
+						                    handler.decoder.maxHeaderSize(),
+						                    handler.decoder.maxChunkSize(),
+						                    handler.decoder.failOnMissingResponse,
+						                    handler.decoder.validateHeaders(),
+						                    handler.decoder.initialBufferSize(),
+						                    handler.decoder.parseHttpAfterConnectRequest);
 
 				final Http2Connection connection = new DefaultHttp2Connection(false);
 				HttpToHttp2ConnectionHandlerBuilder h2HandlerBuilder = new
@@ -854,6 +843,17 @@ final class HttpClientConnect extends HttpClient {
 				}
 
 				p.addLast(NettyPipeline.HttpCodec, httpClientCodec);
+//				TODO
+//				ChannelHandler handler = p.get(NettyPipeline.TcpMetricsHandler);
+//				if (handler != null) {
+//					TcpMetricsHandler tcpMetrics = (TcpMetricsHandler) handler;
+//					HttpClientMetricsHandler httpMetrics =
+//							new HttpClientMetricsHandler(tcpMetrics.registry(),
+//									tcpMetrics.name(),
+//									"http",
+//									tcpMetrics.remoteAddress());
+//					p.addLast(NettyPipeline.HttpMetricsHandler, httpMetrics);
+//				}
 //				 .addLast(new HttpClientUpgradeHandler(httpClientCodec,
 //				          new Http2ClientUpgradeCodec(h2HandlerBuilder.build()), 65536))
 //				 .addLast(this);
@@ -900,12 +900,28 @@ final class HttpClientConnect extends HttpClient {
 			}
 
 			if (ApplicationProtocolNames.HTTP_1_1.equals(protocol)) {
-				p.addBefore(NettyPipeline.ReactiveBridge, NettyPipeline.HttpCodec, new HttpClientCodec());
+				p.addBefore(NettyPipeline.ReactiveBridge, NettyPipeline.HttpCodec,
+						new HttpClientCodec(parent.handler.decoder.maxInitialLineLength(),
+						                    parent.handler.decoder.maxHeaderSize(),
+						                    parent.handler.decoder.maxChunkSize(),
+						                    parent.handler.decoder.failOnMissingResponse,
+						                    parent.handler.decoder.validateHeaders(),
+						                    parent.handler.decoder.initialBufferSize(),
+						                    parent.handler.decoder.parseHttpAfterConnectRequest));
 
 				if (parent.handler.compress) {
 					p.addAfter(NettyPipeline.HttpCodec,
 					           NettyPipeline.HttpDecompressor,
 					           new HttpContentDecompressor());
+				}
+
+				ChannelHandler handler = p.get(NettyPipeline.TcpMetricsHandler);
+				if (handler != null) {
+					TcpMetricsHandler tcpMetrics = (TcpMetricsHandler) handler;
+					HttpClientMetricsHandler httpMetrics =
+							new HttpClientMetricsHandler(tcpMetrics.registry(),
+							                             tcpMetrics.name());
+					p.addBefore(NettyPipeline.ReactiveBridge, NettyPipeline.HttpMetricsHandler, httpMetrics);
 				}
 //				ChannelOperations<?, ?> ops = HTTP_OPS.create(Connection.from(ctx.channel()), listener,	null);
 //				if (ops != null) {

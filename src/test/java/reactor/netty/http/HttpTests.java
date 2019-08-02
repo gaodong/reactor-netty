@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -35,6 +35,7 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 import reactor.netty.ByteBufFlux;
 import reactor.netty.DisposableServer;
+import reactor.netty.NettyPipeline;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.http.server.HttpServer;
 import reactor.netty.http.server.HttpServerRequest;
@@ -75,7 +76,7 @@ public class HttpTests {
 
 		StepVerifier.create(content)
 				    .expectComplete()
-				    .verify(Duration.ofSeconds(5000));
+				    .verify(Duration.ofSeconds(30));
 
 		server.disposeNow();
 	}
@@ -147,12 +148,12 @@ public class HttpTests {
 		DisposableServer server =
 				HttpServer.create()
 				          .port(0)
-						  .route(r -> r.get("/test", (req, res) -> {throw new RuntimeException();})
-						               .get("/test2", (req, res) -> res.send(Flux.error(new Exception()))
+						  .route(r -> r.get("/test", (req, res) -> {throw new RuntimeException("test");})
+						               .get("/test2", (req, res) -> res.send(Flux.error(new Exception("test2")))
 						                                                 .then()
 						                                                 .log("send-1")
 						                                                 .doOnError(t -> errored1.countDown()))
-						               .get("/test3", (req, res) -> Flux.error(new Exception()))
+						               .get("/test3", (req, res) -> Flux.error(new Exception("test3")))
 						               .get("/issue231_1", (req, res) -> res.send(flux1)
 						                                                      .then()
 						                                                      .log("send-2")
@@ -200,21 +201,21 @@ public class HttpTests {
 
 		Assertions.assertThat(errored1.await(30, TimeUnit.SECONDS)).isTrue();
 
-		ByteBuf content1 = client.get()
-		                         .uri("/issue231_1")
-		                         .responseContent()
-		                         .log("received-status-3")
-		                .next()
-		                .block(Duration.ofSeconds(30));
+		client.get()
+		      .uri("/issue231_1")
+		      .responseContent()
+		      .log("received-status-3")
+		      .next()
+		      .block(Duration.ofSeconds(30));
 
 		Assertions.assertThat(errored2.await(30, TimeUnit.SECONDS)).isTrue();
 
-		content1 = client.get()
-		                 .uri("/issue231_2")
-		                 .responseContent()
-		                 .log("received-status-4")
-		                 .next()
-		                 .block(Duration.ofSeconds(30));
+		client.get()
+		      .uri("/issue231_2")
+		      .responseContent()
+		      .log("received-status-4")
+		      .next()
+		      .block(Duration.ofSeconds(30));
 
 		Assertions.assertThat(errored3.await(30, TimeUnit.SECONDS)).isTrue();
 
@@ -274,12 +275,12 @@ public class HttpTests {
 				                                             .map(it -> it + ' ' + req.param("param") + '!')
 				                                             .log("server-reply")));
 				          }))
-				          .wiretap()
+				          .wiretap(true)
 				          .bindNow(Duration.ofSeconds(5));
 
 		HttpClient client = HttpClient.create()
 				                      .port(server.address().getPort())
-				                      .wiretap();
+				                      .wiretap(true);
 
 		Mono<List<String>> response =
 		    client.request(HttpMethod.GET)
@@ -365,7 +366,6 @@ public class HttpTests {
 				                       .get("/stream", (req, res) ->
 						                           req.receive()
 						                              .then(res.compression(true)
-						                                       .options(op -> op.flushOnEach())
 						                                       .sendString(ep.log()).then())))
 				          .wiretap(true)
 				          .bindNow();
@@ -401,23 +401,22 @@ public class HttpTests {
 		            .thenAwait(Duration.ofMillis(30))
 		            .expectNext("test2")
 		            .thenAwait(Duration.ofMillis(30))
-		            .then(() -> ep.onComplete())
+		            .then(ep::onComplete)
 		            .verifyComplete();
 
 
 
-		content =
-				HttpClient.create()
-				          .port(server.address().getPort())
-				          .compress(true)
-				          .post()
-				          .uri("/hi")
-				          .send(ByteBufFlux.fromString(Flux.just("1", "2", "3", "4", "5")))
-				          .responseContent()
-				          .aggregate()
-				          .asString()
-				          .log()
-				          .block();
+		HttpClient.create()
+		          .port(server.address().getPort())
+		          .compress(true)
+		          .post()
+		          .uri("/hi")
+		          .send(ByteBufFlux.fromString(Flux.just("1", "2", "3", "4", "5")))
+		          .responseContent()
+		          .aggregate()
+		          .asString()
+		          .log()
+		          .block();
 
 
 		server.disposeNow();
@@ -440,8 +439,7 @@ public class HttpTests {
 				                                                                  .sendString(Flux.just("test")).then()))
 				                       .get("/stream", (req, res) ->
 						                           req.receive()
-						                              .then(res.options(op -> op.flushOnEach())
-						                                       .sendString(ep.log()).then())))
+						                              .then(res.sendString(ep.log()).then())))
 				          .wiretap(true)
 				          .bindNow();
 
@@ -476,23 +474,22 @@ public class HttpTests {
 		            .thenAwait(Duration.ofMillis(30))
 		            .expectNext("test2")
 		            .thenAwait(Duration.ofMillis(30))
-		            .then(() -> ep.onComplete())
+		            .then(ep::onComplete)
 		            .verifyComplete();
 
 
 
-		content =
-				HttpClient.create()
-				          .port(server.address().getPort())
-				          .compress(true)
-				          .post()
-				          .uri("/hi")
-				          .send(ByteBufFlux.fromString(Flux.just("1", "2", "3", "4", "5")))
-				          .responseContent()
-				          .aggregate()
-				          .asString()
-				          .log()
-				          .block();
+		HttpClient.create()
+		          .port(server.address().getPort())
+		          .compress(true)
+		          .post()
+		          .uri("/hi")
+		          .send(ByteBufFlux.fromString(Flux.just("1", "2", "3", "4", "5")))
+		          .responseContent()
+		          .aggregate()
+		          .asString()
+		          .log()
+		          .block();
 
 
 		server.disposeNow();
@@ -511,19 +508,18 @@ public class HttpTests {
 				          .wiretap(true)
 				          .bindNow();
 
-		String response =
-				HttpClient.create()
-				          .port(server.port())
-				          .secure(ssl -> ssl.sslContext(
-				                  SslContextBuilder.forClient()
-				                                   .trustManager(InsecureTrustManagerFactory.INSTANCE)))
-				          .wiretap(true)
-				          .get()
-				          .uri("/")
-				          .responseContent()
-				          .aggregate()
-				          .asString()
-				          .block(Duration.ofSeconds(30));
+		HttpClient.create()
+		          .port(server.port())
+		          .secure(ssl -> ssl.sslContext(
+		                  SslContextBuilder.forClient()
+		                                   .trustManager(InsecureTrustManagerFactory.INSTANCE)))
+		          .wiretap(true)
+		          .get()
+		          .uri("/")
+		          .responseContent()
+		          .aggregate()
+		          .asString()
+		          .block(Duration.ofSeconds(30));
 
 		server.disposeNow();
 	}
@@ -598,14 +594,14 @@ public class HttpTests {
 //				HttpServer.create()
 //				          .protocol(HttpProtocol.H2C)
 //				          .handle((req, res) -> res.sendString(Mono.just("Hello")))
-//				          .wiretap()
+//				          .wiretap(true)
 //				          .bindNow();
 //
 //		StepVerifier.create(
 //				HttpClient.create()
 //				          .port(server.port())
 //				          .protocol(HttpProtocol.H2C)
-//				          .wiretap()
+//				          .wiretap(true)
 //				          .post()
 //				          .uri("/")
 ////				          .send((req, out) -> out.sendString(Mono.just("World")))
@@ -726,7 +722,7 @@ public class HttpTests {
 				          .protocol(HttpProtocol.H2, HttpProtocol.HTTP11)
 				          .secure(ssl -> ssl.sslContext(serverOptions))
 				          .port(8080)
-				          .handle((req, res) -> res.sendString(Mono.just("Hello")))
+				          .handle((req, res) -> res.sendString(req.receive().aggregate().retain().asString()))
 				          .wiretap(true)
 				          .bindNow();
 

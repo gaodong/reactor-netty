@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -63,6 +63,9 @@ import reactor.netty.tcp.TcpClient;
  * is called to retrieve a ready to use {@link TcpClient}, then {@link
  * TcpClient#configure()} retrieve a usable {@link Bootstrap} for the final {@link
  * TcpClient#connect()} is called.
+ * {@code Transfer-Encoding: chunked} will be applied for those HTTP methods for which
+ * a request body is expected. {@code Content-Length} provided via request headers
+ * will disable {@code Transfer-Encoding: chunked}.
  * <p> Examples:
  * <pre>
  * {@code
@@ -409,22 +412,6 @@ public abstract class HttpClient {
 	 */
 	public final HttpClient mapConnect(BiFunction<? super Mono<? extends Connection>, ? super Bootstrap, ? extends Mono<? extends Connection>> connector) {
 		return new HttpClientOnConnectMap(this, connector);
-	}
-
-	/**
-	 * Specifies whether transfer-encoding is enabled
-	 *
-	 * @param chunkedEnabled if true transfer-encoding is enabled otherwise disabled.
-	 * (default: true)
-	 * @return a new {@link HttpClient}
-	 */
-	public final HttpClient chunkedTransfer(boolean chunkedEnabled) {
-		if (chunkedEnabled) {
-			return tcpConfiguration(CHUNKED_ATTR_CONFIG);
-		}
-		else {
-			return tcpConfiguration(CHUNKED_ATTR_DISABLE);
-		}
 	}
 
 	/**
@@ -816,19 +803,6 @@ public abstract class HttpClient {
 	}
 
 	/**
-	 * Apply a wire logger configuration using {@link HttpClient} category
-	 * and {@code DEBUG} logger level
-	 *
-	 * @return a new {@link HttpClient}
-	 * @deprecated Use {@link HttpClient#wiretap(boolean)}
-	 */
-	@Deprecated
-	public final HttpClient wiretap() {
-		return tcpConfiguration(tcpClient -> tcpClient.bootstrap(
-		        b -> BootstrapHandlers.updateLogSupport(b, LOGGING_HANDLER)));
-	}
-
-	/**
 	 * Apply or remove a wire logger configuration using {@link HttpClient} category
 	 * and {@code DEBUG} logger level
 	 *
@@ -844,6 +818,29 @@ public abstract class HttpClient {
 			return tcpConfiguration(tcpClient -> tcpClient.bootstrap(
 			        b -> BootstrapHandlers.removeConfiguration(b, NettyPipeline.LoggingHandler)));
 		}
+	}
+
+	/**
+	 * Specifies whether the metrics are enabled on the {@link HttpClient},
+	 * assuming Micrometer is on the classpath.
+	 *
+	 * @param metricsEnabled if true enables the metrics on the client.
+	 * @return a new {@link HttpClient}
+	 */
+	public final HttpClient metrics(boolean metricsEnabled) {
+		return tcpConfiguration(tcpClient -> tcpClient.metrics(metricsEnabled, "reactor.netty.http.client"));
+	}
+
+	/**
+	 * Configure the {@link io.netty.handler.codec.http.HttpClientCodec}'s response decoding options.
+	 *
+	 * @param responseDecoderOptions a function to mutate the provided Http response decoder options
+	 * @return a new {@link HttpClient}
+	 */
+	public final HttpClient httpResponseDecoder(Function<HttpResponseDecoderSpec, HttpResponseDecoderSpec> responseDecoderOptions) {
+		return tcpConfiguration(
+				responseDecoderOptions.apply(new HttpResponseDecoderSpec())
+				                      .build());
 	}
 
 	/**
@@ -925,17 +922,11 @@ public abstract class HttpClient {
 	static final Function<TcpClient, TcpClient> COMPRESS_ATTR_DISABLE =
 			tcp -> tcp.bootstrap(HttpClientConfiguration.MAP_NO_COMPRESS);
 
-	static final Function<TcpClient, TcpClient> CHUNKED_ATTR_CONFIG =
-			tcp -> tcp.bootstrap(HttpClientConfiguration.MAP_CHUNKED);
-
 	static final Function<TcpClient, TcpClient> KEEPALIVE_ATTR_CONFIG =
 			tcp -> tcp.bootstrap(HttpClientConfiguration.MAP_KEEPALIVE);
 
 	static final Function<TcpClient, TcpClient> KEEPALIVE_ATTR_DISABLE =
 			tcp -> tcp.bootstrap(HttpClientConfiguration.MAP_NO_KEEPALIVE);
-
-	static final Function<TcpClient, TcpClient> CHUNKED_ATTR_DISABLE =
-			tcp -> tcp.bootstrap(HttpClientConfiguration.MAP_NO_CHUNKED);
 
 	static final Function<TcpClient, TcpClient> FOLLOW_REDIRECT_ATTR_CONFIG =
 			tcp -> tcp.bootstrap(HttpClientConfiguration.MAP_REDIRECT);

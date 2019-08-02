@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       http://www.apache.org/licenses/LICENSE-2.0
+ *       https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,18 +16,17 @@
 
 package reactor.netty.tcp;
 
+import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.util.Objects;
 import java.util.function.Supplier;
 
 import io.netty.bootstrap.ServerBootstrap;
-import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelOption;
-import io.netty.util.NetUtil;
 import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.MonoSink;
@@ -123,19 +122,11 @@ final class TcpServerBind extends TcpServer {
 	}
 
 	ServerBootstrap createServerBootstrap() {
-		return new ServerBootstrap().option(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
+		return new ServerBootstrap()
 				.option(ChannelOption.SO_REUSEADDR, true)
-				.option(ChannelOption.SO_BACKLOG, 1000)
-				.childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
-				.childOption(ChannelOption.SO_RCVBUF, 1024 * 1024)
-				.childOption(ChannelOption.SO_SNDBUF, 1024 * 1024)
 				.childOption(ChannelOption.AUTO_READ, false)
-				.childOption(ChannelOption.SO_KEEPALIVE, true)
 				.childOption(ChannelOption.TCP_NODELAY, true)
-				.childOption(ChannelOption.CONNECT_TIMEOUT_MILLIS, 30000)
-				.localAddress(
-						InetSocketAddressUtil.createUnresolved(NetUtil.LOCALHOST.getHostAddress(),
-								DEFAULT_PORT));
+				.localAddress(new InetSocketAddress(DEFAULT_PORT));
 	}
 
 	static final class DisposableBind
@@ -212,7 +203,7 @@ final class TcpServerBind extends TcpServer {
 		@Override
 		public void onUncaughtException(Connection connection, Throwable error) {
 			ChannelOperations ops = ChannelOperations.get(connection.channel());
-			if (ops == null && AbortedException.isConnectionReset(error)) {
+			if (ops == null && (error instanceof IOException || AbortedException.isConnectionReset(error))) {
 				if (log.isDebugEnabled()) {
 					log.debug(format(connection.channel(), "onUncaughtException(" + connection + ")"), error);
 				}
