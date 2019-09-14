@@ -15,9 +15,6 @@
  */
 package reactor.netty.http.server;
 
-import java.net.InetSocketAddress;
-import java.net.SocketAddress;
-
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.DistributionSummary;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -31,7 +28,11 @@ import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.LastHttpContent;
+import reactor.netty.Metrics;
 import reactor.netty.channel.ChannelOperations;
+
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 
 import static reactor.netty.Metrics.*;
 
@@ -115,7 +116,7 @@ final class HttpServerMetricsHandler extends ChannelDuplexHandler {
 					DistributionSummary.builder(name + DATA_SENT)
 					                   .baseUnit("bytes")
 					                   .description("Amount of the data that is sent, in bytes")
-					                   .tags(REMOTE_ADDRESS, ops.remoteAddress().getHostString(), URI, ops.uri())
+					                   .tags(REMOTE_ADDRESS, Metrics.formatSocketAddress(ops.remoteAddress()), URI, ops.uri())
 					                   .register(registry)
 					                   .record(dataSent);
 
@@ -153,7 +154,7 @@ final class HttpServerMetricsHandler extends ChannelDuplexHandler {
 				DistributionSummary.builder(name + DATA_RECEIVED)
 				                   .baseUnit("bytes")
 				                   .description("Amount of the data that is received, in bytes")
-				                   .tags(REMOTE_ADDRESS, address(ctx), URI, uri)
+				                   .tags(REMOTE_ADDRESS, Metrics.formatSocketAddress(ctx.channel().remoteAddress()), URI, uri)
 				                   .register(registry)
 				                   .record(dataReceived);
 
@@ -170,7 +171,7 @@ final class HttpServerMetricsHandler extends ChannelDuplexHandler {
 			Counter.builder(name + ERRORS)
 			       .description("Number of the errors that are occurred")
 			       .tags(REMOTE_ADDRESS,
-					       address(ctx),
+					       Metrics.formatSocketAddress(ctx.channel().remoteAddress()),
 					       URI,
 					       uri)
 			       .register(registry)
@@ -178,16 +179,5 @@ final class HttpServerMetricsHandler extends ChannelDuplexHandler {
 		}
 
 		super.exceptionCaught(ctx, cause);
-	}
-
-	String address(ChannelHandlerContext ctx) {
-		SocketAddress socketAddress = ctx.channel()
-		                                 .remoteAddress();
-		if (socketAddress instanceof InetSocketAddress) {
-			return  ((InetSocketAddress) socketAddress).getHostString();
-		}
-		else {
-			return socketAddress.toString();
-		}
 	}
 }

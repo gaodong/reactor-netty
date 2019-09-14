@@ -15,6 +15,10 @@
  */
 package reactor.netty;
 
+import javax.annotation.Nullable;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
+
 public class Metrics {
 	// Metrics
 	public static final String DATA_RECEIVED = ".data.received";
@@ -43,9 +47,22 @@ public class Metrics {
 
 	public static final String METHOD = "method";
 
-	public static final String PROTOCOL = "tcp";
-
 	public static final String SUCCESS = "SUCCESS";
 
 	public static final String ERROR = "ERROR";
+
+
+	@Nullable
+	public static String formatSocketAddress(@Nullable SocketAddress socketAddress) {
+		if (socketAddress != null) {
+			if (socketAddress instanceof InetSocketAddress) {
+				InetSocketAddress address = (InetSocketAddress) socketAddress;
+				return address.getHostString() + ":" + address.getPort();
+			}
+			else {
+				return socketAddress.toString();
+			}
+		}
+		return null;
+	}
 }

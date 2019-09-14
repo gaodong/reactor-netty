@@ -35,6 +35,7 @@ import io.netty.channel.ChannelPipeline;
 import io.netty.handler.logging.LoggingHandler;
 import reactor.core.Exceptions;
 import reactor.netty.ConnectionObserver;
+import reactor.netty.Metrics;
 import reactor.netty.NettyPipeline;
 import reactor.netty.ReactorNetty;
 import reactor.util.Logger;
@@ -112,19 +113,22 @@ public abstract class BootstrapHandlers {
 
 
 		if (pipeline != null) {
+			BootstrapPipelineHandler newPipeline = new BootstrapPipelineHandler(pipeline);
 			PipelineConfiguration pipelineConfiguration;
-			for (int i = 0; i < pipeline.size(); i++) {
-				pipelineConfiguration = pipeline.get(i);
+			for (int i = 0; i < newPipeline.size(); i++) {
+				pipelineConfiguration = newPipeline.get(i);
 				if (pipelineConfiguration.deferredConsumer != null) {
-					pipeline.set(i,
+					newPipeline.set(i,
 							new PipelineConfiguration(
 									pipelineConfiguration.deferredConsumer.apply(b),
 									pipelineConfiguration.name));
 				}
 			}
+			b.handler(new BootstrapInitializerHandler(newPipeline, opsFactory, listener));
 		}
-
-		b.handler(new BootstrapInitializerHandler(pipeline, opsFactory, listener));
+		else {
+			b.handler(new BootstrapInitializerHandler(pipeline, opsFactory, listener));
+		}
 	}
 
 	/**
@@ -432,6 +436,38 @@ public abstract class BootstrapHandlers {
 		return new LoggingHandlerSupportConsumer(handler, debugSsl);
 	}
 
+	public static ServerBootstrap updateMetricsSupport(ServerBootstrap b, @Nullable String name, String protocol) {
+		return updateConfiguration(b,
+				NettyPipeline.TcpMetricsHandler,
+				new MetricsSupportConsumer(name, protocol, true));
+	}
+
+	public static Bootstrap updateMetricsSupport(Bootstrap b, @Nullable String name, String protocol) {
+		return updateConfiguration(b,
+				NettyPipeline.TcpMetricsHandler,
+				new DeferredMetricsSupport(name, protocol, false));
+	}
+
+	public static ServerBootstrap removeMetricsSupport(ServerBootstrap b) {
+		return removeConfiguration(b, NettyPipeline.TcpMetricsHandler);
+	}
+
+	public static Bootstrap removeMetricsSupport(Bootstrap b) {
+		return removeConfiguration(b, NettyPipeline.TcpMetricsHandler);
+	}
+
+	/**
+	 * Find metrics support in the given client bootstrap
+	 *
+	 * @param b a bootstrap to search
+	 *
+	 * @return any {@link DeferredMetricsSupport} found or null
+	 */
+	@Nullable
+	public static Function<Bootstrap, BiConsumer<ConnectionObserver, Channel>> findMetricsSupport(Bootstrap b) {
+		return BootstrapHandlers.findConfiguration(DeferredMetricsSupport.class, b.config().handler());
+	}
+
 	@ChannelHandler.Sharable
 	static final class BootstrapInitializerHandler extends ChannelInitializer<Channel> {
 
@@ -582,9 +618,12 @@ public abstract class BootstrapHandlers {
 						handler);
 			}
 			else if (pipeline.get(NettyPipeline.ProxyHandler) != null) {
-				pipeline.addAfter(NettyPipeline.ProxyHandler,
-						NettyPipeline.LoggingHandler,
-						handler);
+				pipeline.addBefore(NettyPipeline.ProxyHandler,
+				                   NettyPipeline.ProxyLoggingHandler,
+				                   new LoggingHandler("reactor.netty.proxy"))
+				        .addAfter(NettyPipeline.ProxyHandler,
+				                  NettyPipeline.LoggingHandler,
+				                  handler);
 			}
 			else {
 				pipeline.addFirst(NettyPipeline.LoggingHandler, handler);
@@ -606,6 +645,88 @@ public abstract class BootstrapHandlers {
 		@Override
 		public int hashCode() {
 			return Objects.hash(handler);
+		}
+	}
+
+
+	static final class DeferredMetricsSupport
+			implements Function<Bootstrap, BiConsumer<ConnectionObserver, Channel>> {
+
+		final String name;
+
+		final String protocol;
+
+		final boolean onServer;
+
+		DeferredMetricsSupport(String name, String protocol, boolean onServer) {
+			this.name = name;
+			this.protocol = protocol;
+			this.onServer = onServer;
+		}
+
+		@Override
+		public BiConsumer<ConnectionObserver, Channel> apply(Bootstrap bootstrap) {
+			String address = Metrics.formatSocketAddress(bootstrap.config().remoteAddress());
+			return new MetricsSupportConsumer(name, address, protocol, onServer);
+		}
+
+		@Override
+		public boolean equals(Object o) {
+			if (this == o) {
+				return true;
+			}
+			if (o == null || getClass() != o.getClass()) {
+				return false;
+			}
+			DeferredMetricsSupport that = (DeferredMetricsSupport) o;
+			return onServer == that.onServer && name.equals(that.name);
+		}
+
+		@Override
+		public int hashCode() {
+			return Objects.hash(name, onServer);
+		}
+	}
+
+	static final class MetricsSupportConsumer
+			implements BiConsumer<ConnectionObserver, Channel> {
+
+		final String name;
+
+		final String remoteAddress;
+
+		final String protocol;
+
+		final boolean onServer;
+
+		MetricsSupportConsumer(String name, String protocol, boolean onServer) {
+			this(name, null, protocol, onServer);
+		}
+
+		MetricsSupportConsumer(String name, @Nullable String remoteAddress, String protocol, boolean onServer) {
+			this.name = name;
+			this.remoteAddress = remoteAddress;
+			this.protocol = protocol;
+			this.onServer = onServer;
+		}
+
+		@Override
+		public void accept(ConnectionObserver connectionObserver, Channel channel) {
+			//TODO check all other handlers and add this always as first
+			//SSL, Proxy, ProxyProtocol
+			//TODO or behind the proxy?
+			String address = remoteAddress;
+			if (address == null) {
+				address = Metrics.formatSocketAddress(channel.remoteAddress());
+			}
+
+			channel.pipeline()
+			       .addFirst(NettyPipeline.TcpMetricsHandler,
+			                 new ChannelMetricsHandler(name,
+			                                           //Check the remote address is it on the proxy or not
+			                                           address,
+			                                           protocol,
+			                                           onServer));
 		}
 	}
 }

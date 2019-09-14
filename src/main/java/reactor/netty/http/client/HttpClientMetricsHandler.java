@@ -29,6 +29,7 @@ import io.netty.channel.ChannelPromise;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.LastHttpContent;
+import reactor.netty.Metrics;
 
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
@@ -92,14 +93,7 @@ final class HttpClientMetricsHandler extends ChannelDuplexHandler {
 
 		if (msg instanceof LastHttpContent) {
 			promise.addListener(future -> {
-				String address;
-				SocketAddress socketAddress = ctx.channel().remoteAddress();
-				if (socketAddress instanceof InetSocketAddress) {
-					address = ((InetSocketAddress) socketAddress).getHostString();
-				}
-				else {
-					address = socketAddress.toString();
-				}
+				String address = Metrics.formatSocketAddress(ctx.channel().remoteAddress());
 
 				Timer dataSentTime =
 						dataSentTimeBuilder.tags(REMOTE_ADDRESS, address,
@@ -136,14 +130,7 @@ final class HttpClientMetricsHandler extends ChannelDuplexHandler {
 		}
 
 		if (msg instanceof LastHttpContent) {
-			String address;
-			SocketAddress socketAddress = ctx.channel().remoteAddress();
-			if (socketAddress instanceof InetSocketAddress) {
-				address = ((InetSocketAddress) socketAddress).getHostString();
-			}
-			else {
-				address = socketAddress.toString();
-			}
+			String address = Metrics.formatSocketAddress(ctx.channel().remoteAddress());
 
 			dataReceivedTimeSample.stop(dataReceivedTimeBuilder.tags(REMOTE_ADDRESS, address,
 			                                                         URI, request.uri(),
@@ -171,18 +158,9 @@ final class HttpClientMetricsHandler extends ChannelDuplexHandler {
 
 	@Override
 	public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
-		String address;
-		SocketAddress socketAddress = ctx.channel().remoteAddress();
-		if (socketAddress instanceof InetSocketAddress) {
-			address = ((InetSocketAddress) socketAddress).getHostString();
-		}
-		else {
-			address = socketAddress.toString();
-		}
-
 		Counter.builder(name + ERRORS)
 		       .description("Number of the errors that are occurred")
-		       .tags(REMOTE_ADDRESS, address, URI, request.uri())
+		       .tags(REMOTE_ADDRESS, Metrics.formatSocketAddress(ctx.channel().remoteAddress()), URI, request.uri())
 		       .register(registry)
 		       .increment();
 
