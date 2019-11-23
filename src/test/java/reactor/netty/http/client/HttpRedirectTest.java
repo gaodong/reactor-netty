@@ -426,4 +426,40 @@ public class HttpRedirectTest {
 		server1.disposeNow();
 		server2.disposeNow();
 	}
+
+	@Test
+	public void testRelativeRedirectKeepsScheme() {
+		final String requestPath = "/request";
+		final String redirectPath = "/redirect";
+		final String responseContent = "Success";
+
+		DisposableServer server =
+				HttpServer.create()
+				          .port(0)
+				          .route(r ->
+				                  r.get(requestPath, (req, res) -> res.sendRedirect(redirectPath))
+				                   .get(redirectPath, (req, res) -> res.sendString(Mono.just(responseContent))))
+				          .wiretap(true)
+				          .bindNow();
+
+		final Mono<String> responseMono =
+				HttpClient.create()
+				          .wiretap(true)
+				          .followRedirect(true)
+				          .secure(spec -> spec.sslContext(
+				                  SslContextBuilder.forClient()
+				                                   .trustManager(InsecureTrustManagerFactory.INSTANCE)))
+				          .get()
+				          .uri("http://localhost:" + server.port() + requestPath)
+				          .responseContent()
+				          .aggregate()
+				          .asString();
+
+		StepVerifier.create(responseMono)
+		            .expectNext(responseContent)
+		            .expectComplete()
+		            .verify(Duration.ofSeconds(5));
+
+		server.disposeNow();
+	}
 }

@@ -36,6 +36,7 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
 import io.netty.channel.DefaultChannelPromise;
 import io.netty.channel.EventLoop;
+import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
 import org.reactivestreams.Publisher;
@@ -83,6 +84,7 @@ final class MonoSendMany<I, O> extends MonoSend<I, O> implements Scannable {
 
 	@Override
 	@Nullable
+	@SuppressWarnings("rawtypes")
 	public Object scanUnsafe(Attr key) {
 		if (key == Attr.PREFETCH) return MAX_SIZE;
 		if (key == Attr.PARENT) return source;
@@ -245,6 +247,7 @@ final class MonoSendMany<I, O> extends MonoSend<I, O> implements Scannable {
 		}
 
 		@Override
+		@SuppressWarnings("FutureReturnValueIgnored")
 		public void run() {
 			Queue<I> queue = this.queue;
 			try {
@@ -280,10 +283,12 @@ final class MonoSendMany<I, O> extends MonoSend<I, O> implements Scannable {
 
 
 						if (readableBytes == 0 && !(encodedMessage instanceof ByteBufHolder)) {
+							ReferenceCountUtil.release(encodedMessage);
 							nextRequest++;
 							continue;
 						}
 						pending++;
+						//"FutureReturnValueIgnored" this is deliberate
 						ctx.write(encodedMessage, this);
 
 						if (parent.predicate.test(sourceMessage) || !ctx.channel().isWritable() || readableBytes > ctx.channel().bytesBeforeUnwritable()) {
@@ -388,6 +393,7 @@ final class MonoSendMany<I, O> extends MonoSend<I, O> implements Scannable {
 		}
 
 		@Override
+		@SuppressWarnings("rawtypes")
 		public Object scanUnsafe(Attr key) {
 			if (key == Attr.PARENT) return s;
 			if (key == Attr.ACTUAL) return actual;
@@ -437,6 +443,7 @@ final class MonoSendMany<I, O> extends MonoSend<I, O> implements Scannable {
 			throw new UnsupportedOperationException();
 		}
 
+		@SuppressWarnings("unchecked")
 		@Override
 		public ChannelPromise addListeners(GenericFutureListener<? extends Future<? super Void>>... listeners) {
 			throw new UnsupportedOperationException();
@@ -447,6 +454,7 @@ final class MonoSendMany<I, O> extends MonoSend<I, O> implements Scannable {
 			return this;
 		}
 
+		@SuppressWarnings("unchecked")
 		@Override
 		public ChannelPromise removeListeners(GenericFutureListener<? extends Future<? super Void>>... listeners) {
 			return this;
@@ -609,8 +617,10 @@ final class MonoSendMany<I, O> extends MonoSend<I, O> implements Scannable {
 			throw new UnsupportedOperationException();
 		}
 
+		@SuppressWarnings("rawtypes")
 		static final AtomicIntegerFieldUpdater<SendManyInner>                 WIP          =
 				AtomicIntegerFieldUpdater.newUpdater(SendManyInner.class, "wip");
+		@SuppressWarnings("rawtypes")
 		static final AtomicReferenceFieldUpdater<SendManyInner, Subscription> SUBSCRIPTION =
 				AtomicReferenceFieldUpdater.newUpdater(SendManyInner.class, Subscription.class, "s");
 

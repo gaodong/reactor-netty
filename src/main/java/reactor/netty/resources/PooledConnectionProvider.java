@@ -20,6 +20,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -45,7 +46,6 @@ import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.MonoProcessor;
 import reactor.core.publisher.MonoSink;
-import reactor.core.scheduler.Schedulers;
 import reactor.core.publisher.Operators;
 import reactor.netty.Connection;
 import reactor.netty.ConnectionObserver;
@@ -145,30 +145,23 @@ final class PooledConnectionProvider implements ConnectionProvider {
 			PoolKey holder = new PoolKey(bootstrap.config().remoteAddress(),
 					handler != null ? handler.hashCode() : -1);
 
-			InstrumentedPool<PooledConnection> pool;
-			for (; ; ) {
-				pool = channelPools.get(holder);
-				if (pool != null) {
-					break;
+			InstrumentedPool<PooledConnection> pool = channelPools.computeIfAbsent(holder, poolKey -> {
+				if (log.isDebugEnabled()) {
+					log.debug("Creating new client pool [{}] for {}",
+							name, bootstrap.config().remoteAddress());
 				}
-				pool = new PooledConnectionAllocator(bootstrap, poolFactory, opsFactory).pool;
-				if (channelPools.putIfAbsent(holder, pool) == null) {
-					if (log.isDebugEnabled()) {
-						log.debug("Creating new client pool [{}] for {}",
-								name,
-								bootstrap.config()
-								         .remoteAddress());
-					}
-					if (BootstrapHandlers.findMetricsSupport(bootstrap) != null) {
-						PooledConnectionProviderMetrics.registerMetrics(name,
-								holder.hashCode() + "",
-								Metrics.formatSocketAddress(bootstrap.config().remoteAddress()),
-								pool.metrics());
-					}
-					break;
+
+				InstrumentedPool<PooledConnection> newPool =
+						new PooledConnectionAllocator(bootstrap, poolFactory, opsFactory).pool;
+
+				if (BootstrapHandlers.findMetricsSupport(bootstrap) != null) {
+					PooledConnectionProviderMetrics.registerMetrics(name,
+							poolKey.hashCode() + "",
+							Metrics.formatSocketAddress(bootstrap.config().remoteAddress()),
+							newPool);
 				}
-				pool.dispose();
-			}
+				return newPool;
+			});
 
 			disposableAcquire(sink, obs, pool, opsFactory, acquireTimeout);
 
@@ -178,16 +171,16 @@ final class PooledConnectionProvider implements ConnectionProvider {
 
 	@Override
 	public Mono<Void> disposeLater() {
-		return Mono.<Void>fromRunnable(() -> {
-			InstrumentedPool<PooledConnection> pool;
+		return Mono.defer(() -> {
+			List<Mono<Void>> pools = new ArrayList<>();
 			for (PoolKey key : channelPools.keySet()) {
-				pool = channelPools.remove(key);
-				if (pool != null) {
-					pool.dispose();
-				}
+				pools.add(channelPools.remove(key).disposeLater());
 			}
-		})
-		.subscribeOn(Schedulers.elastic());
+			if (pools.isEmpty()) {
+				return Mono.empty();
+			}
+			return Mono.when(pools);
+		});
 	}
 
 	@Override
@@ -204,10 +197,7 @@ final class PooledConnectionProvider implements ConnectionProvider {
 
 	@Override
 	public String toString() {
-		return "PooledConnectionProvider {" +
-				"name=" + name +
-				", poolFactory=" + poolFactory +
-				'}';
+		return "PooledConnectionProvider {" + "name=" + name + ", poolFactory=" + poolFactory + '}';
 	}
 
 	static void disposableAcquire(MonoSink<Connection> sink, ConnectionObserver obs, InstrumentedPool<PooledConnection> pool,
@@ -300,6 +290,7 @@ final class PooledConnectionProvider implements ConnectionProvider {
 			public void handlerRemoved(ChannelHandlerContext ctx) {
 			}
 
+			@SuppressWarnings("deprecation")
 			@Override
 			public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
 				ctx.pipeline().remove(this);

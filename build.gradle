@@ -21,8 +21,8 @@ buildscript {
   }
   dependencies {
 	classpath 'org.springframework.build.gradle:propdeps-plugin:0.0.7',
-			'io.spring.gradle:spring-io-plugin:0.0.4.RELEASE',
-			'com.google.gradle:osdetector-gradle-plugin:1.4.0'
+			'com.google.gradle:osdetector-gradle-plugin:1.4.0',
+			'biz.aQute.bnd:biz.aQute.bnd.gradle:4.2.0'
   }
 }
 
@@ -30,6 +30,7 @@ plugins {
   id "com.github.hierynomus.license" version "0.14.0"
   id 'org.asciidoctor.convert' version '1.5.11'
   id 'com.github.johnrengelman.shadow' version '5.0.0'
+  id "com.jfrog.artifactory" version "4.9.8" apply false
 }
 
 description = 'Reactive Streams Netty driver'
@@ -47,12 +48,11 @@ ext {
 
   gradleScriptDir = "${rootProject.projectDir}/gradle"
 
-  reactorCoreVersion = "3.3.0.BUILD-SNAPSHOT"
-  reactorPoolVersion = "0.1.0.BUILD-SNAPSHOT"
-  blockHoundVersion = "1.0.0.RC1"
+  //NOTE: reactor dependencies versions are now defined in gradle.properties
+  blockHoundVersion = "1.0.1.RELEASE"
 
   //Metrics
-  micrometerVersion = 'latest.release'
+  micrometerVersion = '1.3.0' //optional baseline: technically could work with 1.2.x, should work with any 1.3.x
 
   // Logging
   slf4jVersion = '1.7.12'
@@ -60,8 +60,17 @@ ext {
   testAddonVersion = reactorCoreVersion
   assertJVersion = '3.6.1'
 
+  // Netty
+  nettyDefaultVersion = '4.1.43.Final'
+  if (!project.hasProperty("forceNettyVersion")) {
+	nettyVersion = nettyDefaultVersion
+  }
+  else {
+	nettyVersion = forceNettyVersion
+	println "Netty version defined from command line: ${forceNettyVersion}"
+  }
+
   // Libraries
-  nettyVersion = '4.1.39.Final'
   jacksonDatabindVersion = '2.5.1'
 
   // Testing
@@ -83,12 +92,13 @@ configure(rootProject) { project ->
 
   apply plugin: 'java'
   apply plugin: 'jacoco'
+  apply from: "$gradleScriptDir/releaser.gradle"
   apply from: "$gradleScriptDir/setup.gradle"
   apply plugin: 'propdeps'
-  apply plugin: 'osgi'
-  apply from: "${gradleScriptDir}/ide.gradle"
+  apply plugin: "biz.aQute.bnd.builder"
   apply from: "${gradleScriptDir}/errorprone.gradle"
   apply plugin: 'com.google.osdetector'
+  apply plugin: 'idea'
 
   jacoco {
 	toolVersion = '0.7.7.201606060606'
@@ -100,12 +110,6 @@ configure(rootProject) { project ->
 	  html.enabled = true
 	}
   }
-
-  ext.bundleImportPackages = [ '!javax.annotation',
-							   'io.netty.channel.kqueue;resolution:=optional;version="[4.1,5)"',
-							   '!reactor.pool',
-							   'io.micrometer.*;resolution:=optional',
-							   '*']
 
   [compileJava, compileTestJava]*.options*.compilerArgs = ["-Xlint:varargs",
 														   "-Xlint:cast",
@@ -192,17 +196,19 @@ configure(rootProject) { project ->
 		jarFileTest
 	}
 
+	//TODO evaluate if this is still necessary, if not remove that and `idea` plugin
 	idea.module.testSourceDirs += sourceSets.jarFileTest.allSource.srcDirs
 
 	repositories {
 	mavenCentral()
-	if (version.endsWith('BUILD-SNAPSHOT') || project.hasProperty('platformVersion')) {
+	if (version.endsWith('BUILD-SNAPSHOT')) {
 	  if (System.getenv ()["bamboo_buildNumber"] == null) {
 		mavenLocal()
 	  } else {
 		println 'Bamboo CI detected, avoiding use of mavenLocal()'
 	  }
 	  maven { url 'https://repo.spring.io/libs-snapshot' }
+	  maven { url 'https://oss.sonatype.org/content/repositories/snapshots' }
 	}
 	maven { url 'https://repo.spring.io/libs-milestone' }
 	maven { url 'https://repo.spring.io/libs-release' }
@@ -242,8 +248,32 @@ configure(rootProject) { project ->
 
 	compile "io.netty:netty-handler:${nettyVersion}"
 	compile "io.netty:netty-codec-http:${nettyVersion}"
-	compile "io.netty:netty-transport-native-epoll:${nettyVersion}:linux-x86_64"
-	optional "io.netty:netty-transport-native-kqueue:${nettyVersion}"
+
+	//transport resolution: typical build forces epoll but not kqueue transitively
+	//on the other hand, if we want to make transport-specific tests, we'll make all
+	// native optional at compile time and add correct native/nio to testRuntime
+	if (project.hasProperty("forceTransport")) {
+	  //so that the main code compiles
+	  optional "io.netty:netty-transport-native-epoll:${nettyVersion}"
+	  optional "io.netty:netty-transport-native-kqueue:${nettyVersion}"
+	  //now we explicitly add correctly qualified native, or do nothing if we want to test NIO
+	  if (forceTransport == "native") {
+		if (osdetector.os == "osx") {
+		  testRuntime "io.netty:netty-transport-native-kqueue:${nettyVersion}${os_suffix}"
+		}
+		else if (osdetector.os == "linux") {
+		  testRuntime "io.netty:netty-transport-native-epoll:${nettyVersion}${os_suffix}"
+		}
+	  }
+	  else if (forceTransport != "nio") {
+		throw new InvalidUserDataException("invalid -PforceTranport option " + forceTransport + ", should be native|nio")
+	  }
+	}
+	else {
+	  //classic build to be distributed
+	  compile "io.netty:netty-transport-native-epoll:${nettyVersion}:linux-x86_64"
+	  optional "io.netty:netty-transport-native-kqueue:${nettyVersion}"
+	}
 
 	// Testing
 	testCompile "com.fasterxml.jackson.core:jackson-databind:$jacksonDatabindVersion"
@@ -258,30 +288,13 @@ configure(rootProject) { project ->
 	testRuntime "ch.qos.logback:logback-classic:$logbackVersion"
 
 	// Needed for HTTP/2 testing
-	testRuntime "io.netty:netty-tcnative-boringssl-static:2.0.25.Final" + os_suffix
+	testRuntime "io.netty:netty-tcnative-boringssl-static:2.0.26.Final" + os_suffix
 
 	jarFileTestCompile 'org.assertj:assertj-core:3.12.2'
 	jarFileTestCompile 'junit:junit:4.12'
 
 	for (dependency in project.configurations.shaded.dependencies) {
-		compile(dependency)
-	}
-  }
-
-
-  if (project.hasProperty('platformVersion')) {
-	apply plugin: 'spring-io'
-
-	repositories {
-	  maven { url 'https://repo.spring.io/libs-snapshot' }
-	}
-
-	dependencyManagement {
-	  springIoTestRuntime {
-		imports {
-		  mavenBom "io.spring.platform:platform-bom:$platformVersion"
-		}
-	  }
+	    compileOnly(dependency)
 	}
   }
 
@@ -290,12 +303,15 @@ configure(rootProject) { project ->
 	classifier = 'original'
 
 	manifest {
-	  instruction 'Import-Package', bundleImportPackages.join(',')
 	  attributes("Created-By": "${System.getProperty("java.version")} (${System.getProperty("java.specification.vendor")})",
 			  "Implementation-Title": project.name,
 			  "Implementation-Version": project.version,
 			  "Automatic-Module-Name": "reactor.netty")
 	}
+	bnd(
+			"-exportcontents": "!*internal*,*;-noimport:=true",
+			"Import-Package": '!*internal*,!javax.annotation,io.netty.channel.kqueue;resolution:=optional;version="[4.1,5)",io.netty.handler.codec.haproxy;resolution:=optional;version="[4.1,5)",!reactor.pool,io.micrometer.*;resolution:=optional,reactor.blockhound.*;resolution:=optional,*'
+	)
   }
 
   check.dependsOn jacocoTestReport
@@ -330,7 +346,6 @@ configure(rootProject) { project ->
 		  }
 	  }
 
-	  exclude 'META-INF/*'
 	  exclude 'META-INF/maven*/**'
   }
 
@@ -341,7 +356,8 @@ configure(rootProject) { project ->
 
   tasks.shadowJar.dependsOn tasks.relocateShadowJar
 
-  artifacts.archives shadowJar
+  //add shadowJar to the publication
+  publishing.publications.mavenJava.artifact(shadowJar)
 
   task jarFileTest(type: Test) {
 	  testClassesDirs = sourceSets.jarFileTest.output.classesDirs
@@ -353,6 +369,7 @@ configure(rootProject) { project ->
   }
   project.tasks.check.dependsOn(jarFileTest)
 
+  project.tasks.compileTestJava.classpath += configurations.shaded
   project.tasks.test.classpath += configurations.shaded
 
   task shadedJarTest(type: Test) {

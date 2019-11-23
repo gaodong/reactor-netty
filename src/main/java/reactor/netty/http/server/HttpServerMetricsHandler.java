@@ -15,10 +15,6 @@
  */
 package reactor.netty.http.server;
 
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.DistributionSummary;
-import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.Timer;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufHolder;
 import io.netty.channel.ChannelDuplexHandler;
@@ -28,13 +24,9 @@ import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.LastHttpContent;
-import reactor.netty.Metrics;
 import reactor.netty.channel.ChannelOperations;
 
-import java.net.InetSocketAddress;
-import java.net.SocketAddress;
-
-import static reactor.netty.Metrics.*;
+import java.time.Duration;
 
 /**
  * @author Violeta Georgieva
@@ -46,45 +38,32 @@ final class HttpServerMetricsHandler extends ChannelDuplexHandler {
 	long dataSent;
 
 
-	Timer.Sample dataReceivedTimeSample;
+	long dataReceivedTime;
 
-	Timer.Sample dataSentTimeSample;
-
-
-	final MeterRegistry registry;
-
-	final String name;
-
-	final Timer.Builder dataReceivedTimeBuilder;
-
-	final Timer.Builder dataSentTimeBuilder;
-
-	final Timer.Builder responseTimeBuilder;
+	long dataSentTime;
 
 	String uri;
 
 	String method;
 
-	HttpServerMetricsHandler(MeterRegistry registry, String name) {
-		this.registry = registry;
-		this.name = name;
-		dataReceivedTimeBuilder = Timer.builder(name + DATA_RECEIVED_TIME)
-		                               .description("Time that is spent in consuming incoming data");
-		dataSentTimeBuilder = Timer.builder(name + DATA_SENT_TIME)
-		                           .description("Time that is spent in sending outgoing data");
-		responseTimeBuilder = Timer.builder(name + RESPONSE_TIME)
-		                           .description("Total time for the request/response");
+
+	final HttpServerMetricsRecorder recorder;
+
+	HttpServerMetricsHandler(HttpServerMetricsRecorder recorder) {
+		this.recorder = recorder;
 	}
 
 	@Override
-	public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
+	@SuppressWarnings("FutureReturnValueIgnored")
+	public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
 		if (msg instanceof HttpResponse) {
 			if (((HttpResponse) msg).status().equals(HttpResponseStatus.CONTINUE)) {
+				//"FutureReturnValueIgnored" this is deliberate
 				ctx.write(msg, promise);
 				return;
 			}
 
-			dataSentTimeSample = Timer.start(registry);
+			dataSentTime = System.currentTimeMillis();
 		}
 
 		if (msg instanceof ByteBufHolder) {
@@ -96,42 +75,45 @@ final class HttpServerMetricsHandler extends ChannelDuplexHandler {
 
 		if (msg instanceof LastHttpContent) {
 			promise.addListener(future -> {
-				ChannelOperations channelOps = ChannelOperations.get(ctx.channel());
+				ChannelOperations<?,?> channelOps = ChannelOperations.get(ctx.channel());
 				if (channelOps instanceof HttpServerOperations) {
 					HttpServerOperations ops = (HttpServerOperations) channelOps;
-					dataSentTimeSample.stop(dataSentTimeBuilder.tags(URI, ops.uri(),
-					                                                 METHOD, ops.method().name(),
-					                                                 STATUS, ops.status().codeAsText().toString())
-					                                           .register(registry));
-					Timer responseTime = responseTimeBuilder.tags(URI, ops.uri(),
-					                                              METHOD, ops.method().name(),
-					                                              STATUS, ops.status().codeAsText().toString())
-					                                        .register(registry);
-					if (dataReceivedTimeSample != null) {
-						dataReceivedTimeSample.stop(responseTime);
+					recorder.recordDataSentTime(
+							ops.uri(),
+							ops.method().name(),
+							ops.status().codeAsText().toString(),
+							Duration.ofMillis(System.currentTimeMillis() - dataSentTime));
+
+					if (dataReceivedTime != 0) {
+						recorder.recordResponseTime(
+								ops.uri(),
+								ops.method().name(),
+								ops.status().codeAsText().toString(),
+								Duration.ofMillis(System.currentTimeMillis() - dataReceivedTime));
 					}
 					else {
-						dataSentTimeSample.stop(responseTime);
+						recorder.recordDataSentTime(
+								ops.uri(),
+								ops.method().name(),
+								ops.status().codeAsText().toString(),
+								Duration.ofMillis(System.currentTimeMillis() - dataSentTime));
 					}
-					DistributionSummary.builder(name + DATA_SENT)
-					                   .baseUnit("bytes")
-					                   .description("Amount of the data that is sent, in bytes")
-					                   .tags(REMOTE_ADDRESS, Metrics.formatSocketAddress(ops.remoteAddress()), URI, ops.uri())
-					                   .register(registry)
-					                   .record(dataSent);
+
+					recorder.recordDataSent(ops.remoteAddress(), ops.uri(), dataSent);
 
 					dataSent = 0;
 				}
 			});
 		}
 
-		super.write(ctx, msg, promise);
+		//"FutureReturnValueIgnored" this is deliberate
+		ctx.write(msg, promise);
 	}
 
 	@Override
-	public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+	public void channelRead(ChannelHandlerContext ctx, Object msg) {
 		if (msg instanceof HttpRequest) {
-			dataReceivedTimeSample = Timer.start(registry);
+			dataReceivedTime = System.currentTimeMillis();
 			HttpRequest request = (HttpRequest) msg;
 			uri = request.uri();
 			method = request.method()
@@ -146,38 +128,22 @@ final class HttpServerMetricsHandler extends ChannelDuplexHandler {
 		}
 
 		if (msg instanceof LastHttpContent) {
-			Timer dataReceivedTime = dataReceivedTimeBuilder.tags(URI, uri, METHOD, method)
-			                                                .register(registry);
+			recorder.recordDataReceivedTime(uri, method, Duration.ofMillis(System.currentTimeMillis() - dataReceivedTime));
 
+			recorder.recordDataReceived(ctx.channel().remoteAddress(), uri, dataReceived);
 
-			dataReceivedTimeSample.stop(dataReceivedTime);
-				DistributionSummary.builder(name + DATA_RECEIVED)
-				                   .baseUnit("bytes")
-				                   .description("Amount of the data that is received, in bytes")
-				                   .tags(REMOTE_ADDRESS, Metrics.formatSocketAddress(ctx.channel().remoteAddress()), URI, uri)
-				                   .register(registry)
-				                   .record(dataReceived);
-
-				dataReceived = 0;
+			dataReceived = 0;
 		}
 
-		super.channelRead(ctx, msg);
+		ctx.fireChannelRead(msg);
 	}
 
 	@Override
-	public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
-
+	public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
 		if (uri != null) {
-			Counter.builder(name + ERRORS)
-			       .description("Number of the errors that are occurred")
-			       .tags(REMOTE_ADDRESS,
-					       Metrics.formatSocketAddress(ctx.channel().remoteAddress()),
-					       URI,
-					       uri)
-			       .register(registry)
-			       .increment();
+			recorder.incrementErrorsCount(ctx.channel().remoteAddress(), uri);
 		}
 
-		super.exceptionCaught(ctx, cause);
+		ctx.fireExceptionCaught(cause);
 	}
 }

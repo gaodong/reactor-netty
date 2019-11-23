@@ -1525,8 +1525,7 @@ public class HttpClientTest {
 	}
 
 	@Test
-	@Ignore
-	public void testIssue700() {
+	public void testIssue700AndIssue876() {
 		DisposableServer server =
 				HttpServer.create()
 				          .port(0)
@@ -1537,7 +1536,7 @@ public class HttpClientTest {
 				          .bindNow();
 
 		HttpClient client = createHttpClientForContextWithAddress(server);
-		for(int i = 0; i < 500; ++i) {
+		for(int i = 0; i < 1000; ++i) {
 			try {
 				client.get()
 				      .uri("/")
@@ -1743,12 +1742,20 @@ public class HttpClientTest {
 			                   .port(0)
 			                   .wiretap(true)
 			                   .route(r ->
-			                       r.post("/empty", (req, res) -> res.status(400)
-			                                                               .header(HttpHeaderNames.CONNECTION, "close")
-			                                                               .send(Mono.empty()))
-			                        .post("/test", (req, res) -> res.status(400)
-			                                                              .header(HttpHeaderNames.CONNECTION, "close")
-			                                                              .sendString(Mono.just("Test"))))
+			                       r.post("/empty", (req, res) -> {
+			                           // Just consume the incoming body
+			                           req.receive().subscribe();
+			                           return res.status(400)
+			                                     .header(HttpHeaderNames.CONNECTION, "close")
+			                                     .send(Mono.empty());
+			                        })
+			                        .post("/test", (req, res) -> {
+			                            // Just consume the incoming body
+			                            req.receive().subscribe();
+			                            return res.status(400)
+			                                      .header(HttpHeaderNames.CONNECTION, "close")
+			                                      .sendString(Mono.just("Test"));
+			                        }))
 			                   .bindNow();
 
 			HttpClient client = createHttpClientForContextWithAddress(server);

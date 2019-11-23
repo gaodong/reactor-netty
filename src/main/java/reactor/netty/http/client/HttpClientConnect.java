@@ -77,7 +77,9 @@ import reactor.netty.NettyOutbound;
 import reactor.netty.NettyPipeline;
 import reactor.netty.channel.AbortedException;
 import reactor.netty.channel.BootstrapHandlers;
+import reactor.netty.channel.ChannelMetricsRecorder;
 import reactor.netty.channel.ChannelOperations;
+import reactor.netty.channel.MicrometerChannelMetricsRecorder;
 import reactor.netty.http.HttpResources;
 import reactor.netty.resources.LoopResources;
 import reactor.netty.tcp.InetSocketAddressUtil;
@@ -607,11 +609,11 @@ final class HttpClientConnect extends HttpClient {
 				SocketAddress address = from.getRemoteAddress();
 				if (address instanceof InetSocketAddress) {
 					InetSocketAddress inetSocketAddress = (InetSocketAddress) address;
-					toURI = uriEndpointFactory.createUriEndpoint(to, from.isWs(),
+					toURI = uriEndpointFactory.createUriEndpoint(from, to,
 							() -> URI_ADDRESS_MAPPER.apply(inetSocketAddress.getHostString(), inetSocketAddress.getPort()));
 				}
 				else {
-					toURI = uriEndpointFactory.createUriEndpoint(to, from.isWs(),
+					toURI = uriEndpointFactory.createUriEndpoint(from, to,
 							() -> URI_ADDRESS_MAPPER.apply(from.host, from.port));
 				}
 			}
@@ -622,7 +624,7 @@ final class HttpClientConnect extends HttpClient {
 			this.redirectedFrom = addToRedirectedFromArray(redirectedFrom, from);
 		}
 
-		@SuppressWarnings("unchecked")
+		@SuppressWarnings({"unchecked","rawtypes"})
 		static Supplier<String>[] addToRedirectedFromArray(@Nullable Supplier<String>[] redirectedFrom,
 				UriEndpoint from) {
 			Supplier<String> fromUrlSupplier = from::toExternalForm;
@@ -700,13 +702,20 @@ final class HttpClientConnect extends HttpClient {
 				           new HttpContentDecompressor());
 			}
 
-			ChannelHandler handler = p.get(NettyPipeline.TcpMetricsHandler);
+			ChannelHandler handler = p.get(NettyPipeline.ChannelMetricsHandler);
 			if (handler != null) {
-				ChannelMetricsHandler tcpMetrics = (ChannelMetricsHandler) handler;
-				HttpClientMetricsHandler httpMetrics =
-						new HttpClientMetricsHandler(tcpMetrics.registry(),
-						                             tcpMetrics.name());
-				p.addLast(NettyPipeline.HttpMetricsHandler, httpMetrics);
+				ChannelMetricsRecorder channelMetricsRecorder = ((ChannelMetricsHandler) handler).recorder();
+				HttpClientMetricsHandler httpMetrics;
+				if (channelMetricsRecorder instanceof MicrometerChannelMetricsRecorder) {
+					MicrometerChannelMetricsRecorder recorder = (MicrometerChannelMetricsRecorder) channelMetricsRecorder;
+					httpMetrics = new HttpClientMetricsHandler(
+							new MicrometerHttpClientMetricsRecorder(recorder.name(), recorder.remoteAddress(), "http"));
+					p.addLast(NettyPipeline.HttpMetricsHandler, httpMetrics);
+				}
+				else if (channelMetricsRecorder instanceof HttpClientMetricsRecorder) {
+					httpMetrics = new HttpClientMetricsHandler((HttpClientMetricsRecorder) channelMetricsRecorder);
+					p.addLast(NettyPipeline.HttpMetricsHandler, httpMetrics);
+				}
 			}
 		}
 
@@ -918,13 +927,20 @@ final class HttpClientConnect extends HttpClient {
 					           new HttpContentDecompressor());
 				}
 
-				ChannelHandler handler = p.get(NettyPipeline.TcpMetricsHandler);
+				ChannelHandler handler = p.get(NettyPipeline.ChannelMetricsHandler);
 				if (handler != null) {
-					ChannelMetricsHandler tcpMetrics = (ChannelMetricsHandler) handler;
-					HttpClientMetricsHandler httpMetrics =
-							new HttpClientMetricsHandler(tcpMetrics.registry(),
-							                             tcpMetrics.name());
-					p.addBefore(NettyPipeline.ReactiveBridge, NettyPipeline.HttpMetricsHandler, httpMetrics);
+					ChannelMetricsRecorder channelMetricsRecorder = ((ChannelMetricsHandler) handler).recorder();
+					HttpClientMetricsHandler httpMetrics;
+					if (channelMetricsRecorder instanceof MicrometerChannelMetricsRecorder) {
+						MicrometerChannelMetricsRecorder recorder = (MicrometerChannelMetricsRecorder) channelMetricsRecorder;
+						httpMetrics = new HttpClientMetricsHandler(
+								new MicrometerHttpClientMetricsRecorder(recorder.name(), recorder.remoteAddress(), "http"));
+						p.addLast(NettyPipeline.HttpMetricsHandler, httpMetrics);
+					}
+					else if (channelMetricsRecorder instanceof HttpClientMetricsRecorder) {
+						httpMetrics = new HttpClientMetricsHandler((HttpClientMetricsRecorder) channelMetricsRecorder);
+						p.addLast(NettyPipeline.HttpMetricsHandler, httpMetrics);
+					}
 				}
 //				ChannelOperations<?, ?> ops = HTTP_OPS.create(Connection.from(ctx.channel()), listener,	null);
 //				if (ops != null) {
@@ -939,6 +955,7 @@ final class HttpClientConnect extends HttpClient {
 
 	}
 
+	@SuppressWarnings("rawtypes")
 	static void openStream(Channel ch, ConnectionObserver listener,
 			HttpClientInitializer initializer) {
 		Http2StreamChannelBootstrap http2StreamChannelBootstrap =

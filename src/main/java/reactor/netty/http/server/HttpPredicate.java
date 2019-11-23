@@ -251,31 +251,48 @@ final class HttpPredicate
 
 		private static final Pattern NAME_SPLAT_PATTERN     =
 				Pattern.compile("\\{([^/]+?)\\}[\\*][\\*]");
-		// JDK 6 doesn't support named capture groups
-		private static final String  NAME_SPLAT_REPLACEMENT = "(?<%NAME%>.*)";
-		//private static final String  NAME_SPLAT_REPLACEMENT = "(.*)";
 
-		private static final Pattern NAME_PATTERN     = Pattern.compile("\\{([^/]+?)\\}");
+		private static final Pattern NAME_PATTERN           = Pattern.compile("\\{([^/]+?)\\}");
 		// JDK 6 doesn't support named capture groups
-		private static final String  NAME_REPLACEMENT = "(?<%NAME%>[^\\/]*)";
-		//private static final String  NAME_REPLACEMENT = "([^\\/]*)";
 
-		private final List<String>                         pathVariables =
-				new ArrayList<>();
-		private final HashMap<String, Matcher>             matchers      =
-				new HashMap<>();
-		private final HashMap<String, Map<String, String>> vars          =
-				new HashMap<>();
+		private static final Pattern URL_PATTERN            =
+				Pattern.compile("(?:(\\w+)://)?((?:\\[.+?])|(?<!\\[)(?:[^/?]+?))(?::(\\d{2,5}))?([/?].*)?");
+
+		private final List<String> pathVariables = new ArrayList<>();
 
 		private final Pattern uriPattern;
 
+		private static String getNameSplatReplacement(String name) {
+			return "(?<" + name + ">.*)";
+		}
+
+		private static String getNameReplacement(String name) {
+			return "(?<" + name + ">[^\\/]*)";
+		}
+
 		static String filterQueryParams(String uri) {
-			int hasQuery = uri.lastIndexOf("?");
+			int hasQuery = uri.lastIndexOf('?');
 			if (hasQuery != -1) {
 				return uri.substring(0, hasQuery);
 			}
 			else {
 				return uri;
+			}
+		}
+
+		static String filterHostAndPort(String uri) {
+			if (uri.startsWith("/")) {
+				return uri;
+			}
+			else {
+				Matcher matcher = URL_PATTERN.matcher(uri);
+				if (matcher.matches()) {
+					String path = matcher.group(4);
+					return path == null ? "/" : path;
+				}
+				else {
+					throw new IllegalArgumentException("Unable to parse url [" + uri + "]");
+				}
 			}
 		}
 
@@ -285,14 +302,14 @@ final class HttpPredicate
 		 * @param uriPattern The pattern to be used by the template
 		 */
 		UriPathTemplate(String uriPattern) {
-			String s = "^" + filterQueryParams(uriPattern);
+			String s = "^" + filterQueryParams(filterHostAndPort(uriPattern));
 
 			Matcher m = NAME_SPLAT_PATTERN.matcher(s);
 			while (m.find()) {
 				for (int i = 1; i <= m.groupCount(); i++) {
 					String name = m.group(i);
 					pathVariables.add(name);
-					s = m.replaceFirst(NAME_SPLAT_REPLACEMENT.replaceAll("%NAME%", name));
+					s = m.replaceFirst(getNameSplatReplacement(name));
 					m.reset(s);
 				}
 			}
@@ -302,7 +319,7 @@ final class HttpPredicate
 				for (int i = 1; i <= m.groupCount(); i++) {
 					String name = m.group(i);
 					pathVariables.add(name);
-					s = m.replaceFirst(NAME_REPLACEMENT.replaceAll("%NAME%", name));
+					s = m.replaceFirst(getNameReplacement(name));
 					m.reset(s);
 				}
 			}
@@ -338,12 +355,8 @@ final class HttpPredicate
 		 * @return the path parameters from the uri. Never {@code null}.
 		 */
 		final Map<String, String> match(String uri) {
-			Map<String, String> pathParameters = vars.get(uri);
-			if (null != pathParameters) {
-				return pathParameters;
-			}
+			Map<String, String> pathParameters = new HashMap<>(pathVariables.size());
 
-			pathParameters = new HashMap<>();
 			Matcher m = matcher(uri);
 			if (m.matches()) {
 				int i = 1;
@@ -352,23 +365,12 @@ final class HttpPredicate
 					pathParameters.put(name, val);
 				}
 			}
-			synchronized (vars) {
-				vars.put(uri, pathParameters);
-			}
-
 			return pathParameters;
 		}
 
 		private Matcher matcher(String uri) {
-			uri = filterQueryParams(uri);
-			Matcher m = matchers.get(uri);
-			if (null == m) {
-				m = uriPattern.matcher(uri);
-				synchronized (matchers) {
-					matchers.put(uri, m);
-				}
-			}
-			return m;
+			uri = filterQueryParams(filterHostAndPort(uri));
+			return uriPattern.matcher(uri);
 		}
 
 	}

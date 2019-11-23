@@ -17,6 +17,7 @@ package reactor.netty.tcp;
 
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.SslProvider;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
 import org.junit.BeforeClass;
@@ -48,8 +49,10 @@ public class TcpSecureMetricsTests extends TcpMetricsTests {
 	@Override
 	protected TcpServer customizeServerOptions(TcpServer tcpServer) {
 		try {
-			SslContext ctx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey()).build();
-			return tcpServer.secure(ssl -> ssl.sslContext(ctx));
+			SslContext ctx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey())
+			                                  .sslProvider(SslProvider.JDK)
+			                                  .build();
+			return tcpServer.secure(ssl -> ssl.sslContext(ctx)).wiretap(true);
 		}
 		catch (SSLException e) {
 			throw new RuntimeException(e);
@@ -60,8 +63,10 @@ public class TcpSecureMetricsTests extends TcpMetricsTests {
 	protected TcpClient customizeClientOptions(TcpClient tcpClient) {
 		try {
 			SslContext ctx = SslContextBuilder.forClient()
-			                                  .trustManager(InsecureTrustManagerFactory.INSTANCE).build();
-			return tcpClient.secure(ssl -> ssl.sslContext(ctx));
+			                                  .trustManager(InsecureTrustManagerFactory.INSTANCE)
+			                                  .sslProvider(SslProvider.JDK)
+			                                  .build();
+			return tcpClient.secure(ssl -> ssl.sslContext(ctx)).wiretap(true);
 		}
 		catch (SSLException e) {
 			throw new RuntimeException(e);
@@ -75,11 +80,10 @@ public class TcpSecureMetricsTests extends TcpMetricsTests {
 
 	@Test
 	public void testFailedTlsHandshake() throws Exception {
-		disposableServer = customizeServerOptions(tcpServer).bindNow();
+		disposableServer = tcpServer.bindNow();
 
-		connection = customizeClientOptions(tcpClient)
-		                     .noSSL()
-		                     .connectNow();
+		connection = tcpClient.noSSL()
+		                      .connectNow();
 
 		connection.outbound()
 		          .sendString(Mono.just("hello"))
@@ -103,7 +107,7 @@ public class TcpSecureMetricsTests extends TcpMetricsTests {
 		String[] timerTags = new String[] {REMOTE_ADDRESS, clientAddress, STATUS, "ERROR"};
 		String[] summaryTags = new String[] {REMOTE_ADDRESS, clientAddress, URI, "tcp"};
 
-		checkTlsTimer(SERVER_TLS_HANDSHAKE_TIME, timerTags, 1, 0.0001);
+		checkTlsTimer(SERVER_TLS_HANDSHAKE_TIME, timerTags, 1, 0);
 		checkDistributionSummary(SERVER_DATA_SENT, summaryTags, 0, 0);
 		checkDistributionSummary(SERVER_DATA_RECEIVED, summaryTags, 0, 0);
 		checkCounter(SERVER_ERRORS, summaryTags, 2);
@@ -113,9 +117,9 @@ public class TcpSecureMetricsTests extends TcpMetricsTests {
 		timerTags = new String[] {REMOTE_ADDRESS, serverAddress, STATUS, "SUCCESS"};
 		summaryTags = new String[] {REMOTE_ADDRESS, serverAddress, URI, "tcp"};
 
-		checkTimer(CLIENT_CONNECT_TIME, timerTags, 1, 0.0001);
+		//checkTimer(CLIENT_CONNECT_TIME, timerTags, 1, 0.0001);
 		checkDistributionSummary(CLIENT_DATA_SENT, summaryTags, 1, 5);
-		checkDistributionSummary(CLIENT_DATA_RECEIVED, summaryTags, 1, 7);
+		checkDistributionSummary(CLIENT_DATA_RECEIVED, summaryTags, 0, 0);
 		checkCounter(CLIENT_ERRORS, summaryTags, 0);
 	}
 }

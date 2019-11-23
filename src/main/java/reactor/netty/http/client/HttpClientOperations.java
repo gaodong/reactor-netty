@@ -414,8 +414,7 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 	public HttpResponseStatus status() {
 		ResponseState responseState = this.responseState;
 		if (responseState != null) {
-			return HttpResponseStatus.valueOf(responseState.response.status()
-			                                                        .code());
+			return responseState.response.status();
 		}
 		throw new IllegalStateException("Trying to access status() while missing response");
 	}
@@ -769,7 +768,7 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 	}
 
 	static final int                    MAX_REDIRECTS      = 50;
-	@SuppressWarnings("unchecked")
+	@SuppressWarnings({"unchecked","rawtypes"})
 	static final Supplier<String>[]     EMPTY_REDIRECTIONS = (Supplier<String>[])new Supplier[0];
 	static final Logger                 log                = Loggers.getLogger(HttpClientOperations.class);
 }

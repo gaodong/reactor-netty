@@ -52,7 +52,9 @@ import reactor.netty.ConnectionObserver;
 import reactor.netty.DisposableServer;
 import reactor.netty.NettyPipeline;
 import reactor.netty.channel.BootstrapHandlers;
+import reactor.netty.channel.ChannelMetricsRecorder;
 import reactor.netty.channel.ChannelOperations;
+import reactor.netty.channel.MicrometerChannelMetricsRecorder;
 import reactor.netty.http.HttpResources;
 import reactor.netty.resources.LoopResources;
 import reactor.netty.tcp.SslProvider;
@@ -92,7 +94,6 @@ final class HttpServerBind extends HttpServer
 	}
 
 	@Override
-	@SuppressWarnings("unchecked")
 	public Mono<? extends DisposableServer> bind(TcpServer delegate) {
 		return delegate.bootstrap(this)
 		               .bind()
@@ -164,8 +165,7 @@ final class HttpServerBind extends HttpServer
 								compressPredicate(conf.compressPredicate, conf.minCompressionSize),
 								conf.forwarded,
 								conf.cookieEncoder,
-								conf.cookieDecoder,
-								true));
+								conf.cookieDecoder));
 			}
 			if ((conf.protocols & HttpServerConfiguration.h2) == HttpServerConfiguration.h2) {
 				return BootstrapHandlers.updateConfiguration(b,
@@ -212,8 +212,7 @@ final class HttpServerBind extends HttpServer
 								compressPredicate(conf.compressPredicate, conf.minCompressionSize),
 								conf.forwarded,
 								conf.cookieEncoder,
-								conf.cookieDecoder,
-								false));
+								conf.cookieDecoder));
 			}
 			if ((conf.protocols & HttpServerConfiguration.h2c) == HttpServerConfiguration.h2c) {
 				return BootstrapHandlers.updateConfiguration(b,
@@ -264,14 +263,14 @@ final class HttpServerBind extends HttpServer
 	}
 
 	static void addStreamHandlers(Channel ch, ConnectionObserver listener, boolean readForwardHeaders,
-			ServerCookieEncoder encoder, ServerCookieDecoder decoder, boolean secure) {
+			ServerCookieEncoder encoder, ServerCookieDecoder decoder) {
 		if (ACCESS_LOG) {
 			ch.pipeline()
 			  .addLast(NettyPipeline.AccessLogHandler, new AccessLogHandlerH2());
 		}
 		ch.pipeline()
-		  .addLast(new Http2StreamBridgeHandler(listener, readForwardHeaders, encoder, decoder, secure))
-		  .addLast(new Http2StreamFrameToHttpObjectCodec(true));
+		  .addLast(new Http2StreamFrameToHttpObjectCodec(true))
+		  .addLast(new Http2StreamBridgeHandler(listener, readForwardHeaders, encoder, decoder));
 
 		ChannelOperations.addReactiveBridge(ch, ChannelOperations.OnSetup.empty(), listener);
 
@@ -311,7 +310,6 @@ final class HttpServerBind extends HttpServer
 		final int                                                chunk;
 		final boolean                                            validate;
 		final int                                                buffer;
-		final boolean                                            secure;
 		final int                                                minCompressionSize;
 		final BiPredicate<HttpServerRequest, HttpServerResponse> compressPredicate;
 		final boolean                                            forwarded;
@@ -327,7 +325,7 @@ final class HttpServerBind extends HttpServer
 				@Nullable BiPredicate<HttpServerRequest, HttpServerResponse> compressPredicate,
 				boolean forwarded,
 				ServerCookieEncoder encoder,
-				ServerCookieDecoder decoder, boolean secure) {
+				ServerCookieDecoder decoder) {
 			this.line = line;
 			this.header = header;
 			this.chunk = chunk;
@@ -336,7 +334,6 @@ final class HttpServerBind extends HttpServer
 			this.minCompressionSize = minCompressionSize;
 			this.compressPredicate = compressPredicate;
 			this.forwarded = forwarded;
-			this.secure = secure;
 			this.cookieEncoder = encoder;
 			this.cookieDecoder = decoder;
 		}
@@ -359,16 +356,23 @@ final class HttpServerBind extends HttpServer
 			}
 
 			p.addLast(NettyPipeline.HttpTrafficHandler,
-					new HttpTrafficHandler(listener, forwarded, compressPredicate, cookieEncoder, cookieDecoder, secure));
+					new HttpTrafficHandler(listener, forwarded, compressPredicate, cookieEncoder, cookieDecoder));
 
-			ChannelHandler handler = p.get(NettyPipeline.TcpMetricsHandler);
+			ChannelHandler handler = p.get(NettyPipeline.ChannelMetricsHandler);
 			if (handler != null) {
 				// TODO doesn't take into account proxy protocol address and forward headers
-				ChannelMetricsHandler tcpMetrics = (ChannelMetricsHandler) handler;
-				HttpServerMetricsHandler httpMetrics =
-						new HttpServerMetricsHandler(tcpMetrics.registry(),
-						                             tcpMetrics.name());
-				p.addLast(NettyPipeline.HttpMetricsHandler, httpMetrics);
+				ChannelMetricsRecorder channelMetricsRecorder = ((ChannelMetricsHandler) handler).recorder();
+				HttpServerMetricsHandler httpMetrics;
+				if (channelMetricsRecorder instanceof MicrometerChannelMetricsRecorder) {
+					MicrometerChannelMetricsRecorder recorder = (MicrometerChannelMetricsRecorder) channelMetricsRecorder;
+					httpMetrics = new HttpServerMetricsHandler(
+							new MicrometerHttpServerMetricsRecorder(recorder.name(), recorder.remoteAddress(), "http"));
+					p.addAfter(NettyPipeline.HttpTrafficHandler, NettyPipeline.HttpMetricsHandler, httpMetrics);
+				}
+				else if (channelMetricsRecorder instanceof HttpServerMetricsRecorder) {
+					httpMetrics = new HttpServerMetricsHandler((HttpServerMetricsRecorder) channelMetricsRecorder);
+					p.addAfter(NettyPipeline.HttpTrafficHandler, NettyPipeline.HttpMetricsHandler, httpMetrics);
+				}
 			}
 
 		}
@@ -428,7 +432,7 @@ final class HttpServerBind extends HttpServer
 
 			final ChannelHandler http2ServerHandler = new ChannelHandlerAdapter() {
 				@Override
-				public void handlerAdded(ChannelHandlerContext ctx) throws Exception {
+				public void handlerAdded(ChannelHandlerContext ctx) {
 					ctx.pipeline()
 							.addAfter(ctx.name(), NettyPipeline.HttpCodec, upgrader.http2FrameCodec)
 							.addAfter(NettyPipeline.HttpCodec, null, new Http2MultiplexHandler(upgrader));
@@ -454,16 +458,23 @@ final class HttpServerBind extends HttpServer
 			}
 
 			p.addLast(NettyPipeline.HttpTrafficHandler,
-					new HttpTrafficHandler(listener, forwarded, compressPredicate, cookieEncoder, cookieDecoder, false));
+					new HttpTrafficHandler(listener, forwarded, compressPredicate, cookieEncoder, cookieDecoder));
 
-			ChannelHandler handler = p.get(NettyPipeline.TcpMetricsHandler);
+			ChannelHandler handler = p.get(NettyPipeline.ChannelMetricsHandler);
 			if (handler != null) {
 				// TODO doesn't take into account proxy protocol address and forward headers
-				ChannelMetricsHandler tcpMetrics = (ChannelMetricsHandler) handler;
-				HttpServerMetricsHandler httpMetrics =
-						new HttpServerMetricsHandler(tcpMetrics.registry(),
-						                             tcpMetrics.name());
-				p.addLast(NettyPipeline.HttpMetricsHandler, httpMetrics);
+				ChannelMetricsRecorder channelMetricsRecorder = ((ChannelMetricsHandler) handler).recorder();
+				HttpServerMetricsHandler httpMetrics;
+				if (channelMetricsRecorder instanceof MicrometerChannelMetricsRecorder) {
+					MicrometerChannelMetricsRecorder recorder = (MicrometerChannelMetricsRecorder) channelMetricsRecorder;
+					httpMetrics = new HttpServerMetricsHandler(
+							new MicrometerHttpServerMetricsRecorder(recorder.name(), recorder.remoteAddress(), "http"));
+					p.addAfter(NettyPipeline.HttpTrafficHandler, NettyPipeline.HttpMetricsHandler, httpMetrics);
+				}
+				else if (channelMetricsRecorder instanceof HttpServerMetricsRecorder) {
+					httpMetrics = new HttpServerMetricsHandler((HttpServerMetricsRecorder) channelMetricsRecorder);
+					p.addAfter(NettyPipeline.HttpTrafficHandler, NettyPipeline.HttpMetricsHandler, httpMetrics);
+				}
 			}
 		}
 	}
@@ -501,7 +512,7 @@ final class HttpServerBind extends HttpServer
 		 */
 		@Override
 		protected void initChannel(Channel ch) {
-			addStreamHandlers(ch, listener, parent.forwarded, parent.cookieEncoder, parent.cookieDecoder, false);
+			addStreamHandlers(ch, listener, parent.forwarded, parent.cookieEncoder, parent.cookieDecoder);
 		}
 
 		@Override
@@ -559,7 +570,7 @@ final class HttpServerBind extends HttpServer
 
 			p.addLast(NettyPipeline.HttpCodec, http2FrameCodecBuilder.build())
 			 .addLast(new Http2MultiplexHandler(
-			        new Http2StreamInitializer(listener, forwarded, cookieEncoder, cookieDecoder, false)));
+			        new Http2StreamInitializer(listener, forwarded, cookieEncoder, cookieDecoder)));
 
 			channel.read();
 		}
@@ -642,7 +653,7 @@ final class HttpServerBind extends HttpServer
 				p.addLast(NettyPipeline.HttpCodec, http2FrameCodecBuilder.build())
 				 .addLast(new Http2MultiplexHandler(
 				        new Http2StreamInitializer(listener, parent.forwarded,
-				            parent.cookieEncoder, parent.cookieDecoder, true)));
+				            parent.cookieEncoder, parent.cookieDecoder)));
 
 				return;
 			}
@@ -654,7 +665,7 @@ final class HttpServerBind extends HttpServer
 						new HttpServerCodec(parent.line, parent.header, parent.chunk, parent.validate, parent.buffer))
 				 .addBefore(NettyPipeline.ReactiveBridge,
 						 NettyPipeline.HttpTrafficHandler,
-						 new HttpTrafficHandler(listener, parent.forwarded, parent.compressPredicate, parent.cookieEncoder, parent.cookieDecoder, true));
+						 new HttpTrafficHandler(listener, parent.forwarded, parent.compressPredicate, parent.cookieEncoder, parent.cookieDecoder));
 
 				if (ACCESS_LOG) {
 					p.addAfter(NettyPipeline.HttpCodec,
@@ -669,14 +680,21 @@ final class HttpServerBind extends HttpServer
 							new SimpleCompressionHandler());
 				}
 
-				ChannelHandler handler = p.get(NettyPipeline.TcpMetricsHandler);
+				ChannelHandler handler = p.get(NettyPipeline.ChannelMetricsHandler);
 				if (handler != null) {
 					// TODO doesn't take into account proxy protocol address and forward headers
-					ChannelMetricsHandler tcpMetrics = (ChannelMetricsHandler) handler;
-					HttpServerMetricsHandler httpMetrics =
-							new HttpServerMetricsHandler(tcpMetrics.registry(),
-							                             tcpMetrics.name());
-					p.addAfter(NettyPipeline.HttpTrafficHandler, NettyPipeline.HttpMetricsHandler, httpMetrics);
+					ChannelMetricsRecorder channelMetricsRecorder = ((ChannelMetricsHandler) handler).recorder();
+					HttpServerMetricsHandler httpMetrics;
+					if (channelMetricsRecorder instanceof MicrometerChannelMetricsRecorder) {
+						MicrometerChannelMetricsRecorder recorder = (MicrometerChannelMetricsRecorder) channelMetricsRecorder;
+						httpMetrics = new HttpServerMetricsHandler(
+								new MicrometerHttpServerMetricsRecorder(recorder.name(), recorder.remoteAddress(), "http"));
+						p.addAfter(NettyPipeline.HttpTrafficHandler, NettyPipeline.HttpMetricsHandler, httpMetrics);
+					}
+					else if (channelMetricsRecorder instanceof HttpServerMetricsRecorder) {
+						httpMetrics = new HttpServerMetricsHandler((HttpServerMetricsRecorder) channelMetricsRecorder);
+						p.addAfter(NettyPipeline.HttpTrafficHandler, NettyPipeline.HttpMetricsHandler, httpMetrics);
+					}
 				}
 				return;
 			}
@@ -725,29 +743,27 @@ final class HttpServerBind extends HttpServer
 
 			p.addLast(NettyPipeline.HttpCodec, http2FrameCodecBuilder.build())
 			 .addLast(new Http2MultiplexHandler(
-			        new Http2StreamInitializer(listener, forwarded, cookieEncoder, cookieDecoder, true)));
+			        new Http2StreamInitializer(listener, forwarded, cookieEncoder, cookieDecoder)));
 		}
 	}
 
 	static final class Http2StreamInitializer extends ChannelInitializer<Channel> {
 
 		final boolean             forwarded;
-		final boolean             secured;
 		final ConnectionObserver  listener;
 		final ServerCookieEncoder cookieEncoder;
 		final ServerCookieDecoder cookieDecoder;
 
-		Http2StreamInitializer(ConnectionObserver listener, boolean forwarded, ServerCookieEncoder encoder, ServerCookieDecoder decoder, boolean secure) {
+		Http2StreamInitializer(ConnectionObserver listener, boolean forwarded, ServerCookieEncoder encoder, ServerCookieDecoder decoder) {
 			this.forwarded = forwarded;
 			this.listener = listener;
 			this.cookieEncoder = encoder;
 			this.cookieDecoder = decoder;
-			this.secured = secure;
 		}
 
 		@Override
 		protected void initChannel(Channel ch) {
-			addStreamHandlers(ch, listener, forwarded, cookieEncoder, cookieDecoder, secured);
+			addStreamHandlers(ch, listener, forwarded, cookieEncoder, cookieDecoder);
 		}
 	}
 

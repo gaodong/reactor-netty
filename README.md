@@ -15,13 +15,13 @@ With `Gradle` from [repo.spring.io](https://repo.spring.io) or `Maven Central` r
 ```groovy
     repositories {
       //maven { url 'https://repo.spring.io/snapshot' }
-      maven { url 'https://repo.spring.io/milestone' }
+      maven { url 'https://repo.spring.io/release' }
       mavenCentral()
     }
 
     dependencies {
-      //compile "io.projectreactor.netty:reactor-netty:0.9.0.BUILD-SNAPSHOT"
-      compile "io.projectreactor.netty:reactor-netty:0.9.0.RC1"
+      //compile "io.projectreactor.netty:reactor-netty:0.9.2.BUILD-SNAPSHOT"
+      compile "io.projectreactor.netty:reactor-netty:0.9.1.RELEASE"
     }
 ```
 
@@ -99,7 +99,7 @@ $ ./gradlew build
 If you want to publish the artifacts to your local `Maven` repository use:
 
 ```shell
-$ ./gradlew install
+$ ./gradlew publishToMavenLocal
 ```
 
 ## Javadoc
